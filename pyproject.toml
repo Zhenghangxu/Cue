@@ -1,0 +1,19 @@
+[project]
+name = "subtitle-maker"
+version = "0.1.0"
+description = "Local WebDAV subtitle finder, synchronizer, and translator"
+requires-python = ">=3.13"
+dependencies = [
+  "chardet>=7,<8",
+  "fastapi>=0.116,<1",
+  "ffsubsync==0.5.1",
+  "guessit>=3.8,<4",
+  "httpx>=0.28,<1",
+  "openai>=2,<3",
+  "python-dotenv>=1.1,<2",
+  "srt>=3.5,<4",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[tool.uv]
+package = false
