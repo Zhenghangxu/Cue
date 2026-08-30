@@ -99,6 +99,8 @@ class MediaIntegrationTest(unittest.TestCase):
                         str(output),
                         "--max-duration-seconds",
                         "5",
+                        "--frame-rate",
+                        "16000",
                         "--extract-audio-first",
                         "--skip-sync-on-low-quality",
                     ],
@@ -119,4 +121,3 @@ class MediaIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

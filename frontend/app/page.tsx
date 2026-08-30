@@ -10,20 +10,29 @@ type FileEntry = {
   modified?: string | null;
 };
 
-type Job = {
-  id: string;
+type JobResult = {
+  outputPath: string;
+  sourceLanguage: string;
+  release: string;
+  moviehashMatch: boolean;
+  quota: { remaining?: number | null; resetTimeUtc?: string | null };
+  aiUsage: { promptTokens: number; completionTokens: number; totalTokens: number };
+};
+
+type JobItem = {
   path: string;
   status: string;
   message: string;
   error?: string | null;
-  result?: {
-    outputPath: string;
-    sourceLanguage: string;
-    release: string;
-    moviehashMatch: boolean;
-    quota: { remaining?: number | null; resetTimeUtc?: string | null };
-    aiUsage: { promptTokens: number; completionTokens: number; totalTokens: number };
-  } | null;
+  result?: JobResult | null;
+};
+
+type Job = {
+  id: string;
+  status: string;
+  message: string;
+  items: JobItem[];
+  error?: string | null;
 };
 
 type Health = {
@@ -58,7 +67,7 @@ export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -66,7 +75,7 @@ export default function Home() {
   const loadDirectory = useCallback(async (nextPath: string) => {
     setLoading(true);
     setError("");
-    setSelected("");
+    setSelected([]);
     try {
       const data = await api<{ path: string; entries: FileEntry[] }>(
         `/api/files?path=${encodeURIComponent(nextPath)}`,
@@ -115,21 +124,29 @@ export default function Home() {
   }, [path]);
 
   async function start() {
-    if (!selected) return;
+    const paths = entries.filter((entry) => entry.type === "video" && selected.includes(entry.path)).map((entry) => entry.path);
+    if (!paths.length) return;
     setError("");
     try {
       const value = await api<{ jobId: string }>("/api/jobs", {
         method: "POST",
-        body: JSON.stringify({ path: selected }),
+        body: JSON.stringify({ paths }),
       });
       sessionStorage.setItem("subtitle-maker-job", value.jobId);
-      setJob({ id: value.jobId, path: selected, status: "queued", message: "Waiting to start" });
+      setJob({
+        id: value.jobId,
+        status: "queued",
+        message: "Waiting to start",
+        items: paths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the job");
     }
   }
 
   const busy = Boolean(job && !TERMINAL.has(job.status));
+  const completed = job?.items.filter((item) => item.status === "completed").length ?? 0;
+  const failed = job?.items.filter((item) => item.status === "failed").length ?? 0;
 
   return (
     <main>
@@ -178,14 +195,15 @@ export default function Home() {
               <span className="name"><i aria-hidden="true">↳</i>{entry.name}</span><span>Folder</span><span>—</span>
             </button>
           ) : (
-            <label className={`row ${selected === entry.path ? "selected" : ""}`} key={entry.path}>
+            <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
               <span className="name">
                 <input
-                  type="radio"
-                  name="video"
+                  type="checkbox"
                   value={entry.path}
-                  checked={selected === entry.path}
-                  onChange={() => setSelected(entry.path)}
+                  checked={selected.includes(entry.path)}
+                  onChange={(event) => setSelected((current) => event.target.checked
+                    ? [...current, entry.path]
+                    : current.filter((path) => path !== entry.path))}
                   disabled={busy}
                 />
                 {entry.name}
@@ -198,11 +216,11 @@ export default function Home() {
 
         <div className="actions">
           <div>
-            <span className="label">Selected video</span>
-            <strong>{selected ? selected.split("/").at(-1) : "Choose one file above"}</strong>
+            <span className="label">Selected videos</span>
+            <strong>{selected.length ? `${selected.length} video${selected.length === 1 ? "" : "s"} selected` : "Choose files above"}</strong>
           </div>
-          <button className="start" onClick={() => void start()} disabled={!selected || busy || !health?.ready}>
-            {busy ? "Working…" : "Create subtitles"}<span aria-hidden="true">→</span>
+          <button className="start" onClick={() => void start()} disabled={!selected.length || busy || !health?.ready}>
+            {busy ? "Working…" : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
           </button>
         </div>
       </section>
@@ -212,20 +230,35 @@ export default function Home() {
           <div className="jobTop">
             <div>
               <p className="eyebrow">CURRENT JOB</p>
-              <h2>{job.status === "completed" ? "Subtitle ready" : job.status === "failed" ? "Could not finish" : job.message}</h2>
+              <h2>{job.status === "completed"
+                ? failed ? "Batch finished with errors" : "Subtitles ready"
+                : job.status === "failed" ? "Batch failed" : job.message}</h2>
             </div>
             <span className="stage">{job.status.replaceAll("_", " ")}</span>
           </div>
           {busy && <div className="progress"><span /></div>}
+          <p className="batchSummary">{completed} completed · {failed} failed · {job.items.length} total</p>
           {job.error && <p className="jobError">{job.error}</p>}
-          {job.result && (
-            <dl>
-              <div><dt>Uploaded</dt><dd>{job.result.outputPath}</dd></div>
-              <div><dt>Source</dt><dd>{job.result.sourceLanguage} · {job.result.release}</dd></div>
-              <div><dt>OpenSubtitles remaining</dt><dd>{job.result.quota.remaining ?? "Unknown"}</dd></div>
-              <div><dt>AI tokens</dt><dd>{job.result.aiUsage.totalTokens.toLocaleString()}</dd></div>
-            </dl>
-          )}
+          <div className="batchItems">
+            {job.items.map((item) => (
+              <article className={`batchItem ${item.status}`} key={item.path}>
+                <div className="batchItemTop">
+                  <strong>{item.path.split("/").at(-1)}</strong>
+                  <span className="stage">{item.status.replaceAll("_", " ")}</span>
+                </div>
+                <p>{item.message}</p>
+                {item.error && <p className="jobError">{item.error}</p>}
+                {item.result && (
+                  <dl>
+                    <div><dt>Uploaded</dt><dd>{item.result.outputPath}</dd></div>
+                    <div><dt>Source</dt><dd>{item.result.sourceLanguage} · {item.result.release}</dd></div>
+                    <div><dt>OpenSubtitles remaining</dt><dd>{item.result.quota.remaining ?? "Unknown"}</dd></div>
+                    <div><dt>AI tokens</dt><dd>{item.result.aiUsage.totalTokens.toLocaleString()}</dd></div>
+                  </dl>
+                )}
+              </article>
+            ))}
+          </div>
         </section>
       )}
 

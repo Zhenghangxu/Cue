@@ -1,8 +1,8 @@
 # Subtitle Maker
 
-A local web app that finds English or Simplified Chinese subtitles for WebDAV videos, synchronizes them from a five-minute streamed sample, translates English through Chat Completions, and uploads the final SRT beside the video.
+A local web app that finds English or Simplified Chinese subtitles for WebDAV videos, synchronizes them from a five-minute streamed sample, translates English through Chat Completions, and uploads the final SRT beside the video. Select multiple videos in one folder to run them as a sequential batch; one failure does not stop the remaining files.
 
-Sidecar subtitles are preferred: an existing Chinese `.srt`, `.ass`, `.ssa`, or `.vtt` completes the job immediately; an existing English sidecar is synchronized and translated to `<video>.zh-Hans.srt`; OpenSubtitles is used only when neither is available.
+Sidecar subtitles are preferred: an existing Chinese `.srt`, `.ass`, `.ssa`, or `.vtt` completes the job immediately; an existing English sidecar is synchronized and translated to `<video>.zh-Hans.srt`; OpenSubtitles is used only when neither is available. Exact OpenSubtitles movie-hash matches skip audio synchronization, while all other matches retain the five-minute quality check.
 
 ## Setup
 

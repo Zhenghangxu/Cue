@@ -14,6 +14,11 @@ import srt
 from backend.app import (
     Config,
     FileEntry,
+    JOBS,
+    JOBS_LOCK,
+    Job,
+    JobItem,
+    JobRequest,
     OpenSubtitles,
     PipelineError,
     SubtitleCandidate,
@@ -24,8 +29,12 @@ from backend.app import (
     detect_sidecar_language,
     normalize_relative,
     process_video,
+    create_job,
+    run_job,
+    sync_subtitle,
     translate_srt,
 )
+from fastapi import HTTPException
 
 
 def config() -> Config:
@@ -120,6 +129,38 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(data, SRT)
         self.assertEqual(quota["remaining"], 4)
         self.assertTrue(requests[0].url.path.endswith("/login"))
+
+    def test_opensubtitles_retries_server_and_rate_limit_responses(self):
+        responses = iter([
+            httpx.Response(503),
+            httpx.Response(429, headers={"Retry-After": "7"}),
+            httpx.Response(200, json={"data": []}),
+        ])
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            transport=httpx.MockTransport(lambda _: next(responses)),
+        )
+        with patch("backend.app.random.uniform", return_value=0.1), patch("backend.app.time.sleep") as sleep:
+            self.assertEqual(OpenSubtitles(config(), client)._search({"query": "movie"}), [])
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.1, 7.0])
+
+    def test_sync_uses_16khz_speech_analysis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.srt"
+            output = Path(directory) / "output.srt"
+            source.write_bytes(SRT)
+
+            def run(args, **_):
+                output.write_bytes(SRT)
+                return SimpleNamespace(returncode=0)
+
+            with patch("backend.app.shutil.which", return_value="ffsubsync"), patch(
+                "backend.app.subprocess.run", side_effect=run
+            ) as process:
+                sync_subtitle("Movie.mkv", source, output, config())
+
+        arguments = process.call_args.args[0]
+        self.assertEqual(arguments[arguments.index("--frame-rate") + 1], "16000")
 
     def test_sidecar_language_uses_content_and_language_suffix(self):
         video = "Movie.2026.mkv"
@@ -274,6 +315,55 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result["outputPath"], "Movie.srt")
         self.assertEqual(webdav.uploads["Movie.srt"], SRT)
 
+    def test_exact_moviehash_skips_sync_but_metadata_match_does_not(self):
+        webdav = FakeWebDAV()
+
+        def forbidden_sync(*_):
+            raise AssertionError("Exact movie hash must skip synchronization")
+
+        process_video(
+            "Exact.mkv",
+            config(),
+            webdav,
+            FakeOpenSubtitles("zh-cn"),
+            lambda *_: None,
+            syncer=forbidden_sync,
+        )
+
+        class MetadataMatch(FakeOpenSubtitles):
+            def find(self, *_):
+                return SubtitleCandidate(1, "zh-cn", "Metadata.Match", False)
+
+        sync_calls = []
+
+        def record_sync(*args):
+            sync_calls.append(args)
+            copy_sync(*args)
+
+        process_video(
+            "Fallback.mkv",
+            config(),
+            webdav,
+            MetadataMatch("zh-cn"),
+            lambda *_: None,
+            syncer=record_sync,
+        )
+        self.assertEqual(len(sync_calls), 1)
+
+        class InvalidExact(FakeOpenSubtitles):
+            def download(self, _):
+                return b"not an srt", {"remaining": 3, "resetTimeUtc": "tomorrow"}
+
+        process_video(
+            "Invalid.mkv",
+            config(),
+            webdav,
+            InvalidExact("zh-cn"),
+            lambda *_: None,
+            syncer=record_sync,
+        )
+        self.assertEqual(len(sync_calls), 2)
+
     def test_english_flow_translates_before_upload(self):
         webdav = FakeWebDAV()
 
@@ -315,6 +405,64 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(webdav.uploads, {})
 
 
+class BatchJobTests(unittest.TestCase):
+    def setUp(self):
+        with JOBS_LOCK:
+            JOBS.clear()
+
+    def tearDown(self):
+        with JOBS_LOCK:
+            JOBS.clear()
+
+    def test_create_job_validates_paths_and_keeps_order(self):
+        with patch("backend.app.require_services"), patch("backend.app.EXECUTOR.submit"):
+            for paths in ([], ["Movie.mkv", "./Movie.mkv"], ["../Movie.mkv"]):
+                with self.subTest(paths=paths), self.assertRaises(HTTPException) as raised:
+                    create_job(JobRequest(paths=paths))
+                self.assertEqual(raised.exception.status_code, 400)
+
+            response = create_job(JobRequest(paths=["B.mkv", "A.mkv"]))
+            self.assertEqual([item.path for item in JOBS[response["jobId"]].items], ["B.mkv", "A.mkv"])
+            with self.assertRaises(HTTPException) as raised:
+                create_job(JobRequest(paths=["C.mkv"]))
+            self.assertEqual(raised.exception.status_code, 409)
+
+    def test_batch_continues_after_item_failure(self):
+        JOBS["batch"] = Job(id="batch", items=[JobItem(path=path) for path in ("A.mkv", "B.mkv", "C.mkv")])
+        calls = []
+
+        def process(path, *_args, **_kwargs):
+            calls.append(path)
+            if path == "B.mkv":
+                raise PipelineError("No subtitle")
+            return {"existing": False, "outputPath": path.replace(".mkv", ".srt")}
+
+        with (
+            patch("backend.app.require_services", return_value=(config(), object(), object())),
+            patch("backend.app.OpenAI"),
+            patch("backend.app.process_video", side_effect=process),
+        ):
+            run_job("batch")
+
+        self.assertEqual(calls, ["A.mkv", "B.mkv", "C.mkv"])
+        self.assertEqual(JOBS["batch"].status, "completed")
+        self.assertEqual([item.status for item in JOBS["batch"].items], ["completed", "failed", "completed"])
+        self.assertIn("2 of 3", JOBS["batch"].message)
+
+    def test_all_failed_batch_is_failed(self):
+        JOBS["batch"] = Job(id="batch", items=[JobItem(path="A.mkv"), JobItem(path="B.mkv")])
+        with (
+            patch("backend.app.require_services", return_value=(config(), object(), object())),
+            patch("backend.app.OpenAI"),
+            patch("backend.app.process_video", side_effect=PipelineError("No subtitle")),
+        ):
+            run_job("batch")
+
+        self.assertEqual(JOBS["batch"].status, "failed")
+        self.assertTrue(all(item.status == "failed" for item in JOBS["batch"].items))
+        self.assertEqual(JOBS["batch"].error, "Every video in the batch failed")
+
+
 class FakeCompletions:
     def __init__(self, invalid=False):
         self.calls = []
@@ -342,11 +490,11 @@ class FakeAI:
 class TranslationTests(unittest.TestCase):
     def test_chat_completions_shape_and_bilingual_output(self):
         fake = FakeAI()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch("backend.app.OpenAI", return_value=fake) as factory:
             source = Path(directory) / "in.srt"
             output = Path(directory) / "out.srt"
             source.write_bytes(SRT)
-            usage = translate_srt(source, output, config(), fake)
+            usage = translate_srt(source, output, config())
             rendered = output.read_text()
 
         self.assertIn("Hello there.\n你好。", rendered)
@@ -357,6 +505,7 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(call["reasoning_effort"], "low")
         self.assertIs(call["store"], False)
         self.assertNotIn("input", call)
+        self.assertEqual(factory.call_args.kwargs["max_retries"], 2)
 
     def test_invalid_translation_ids_fail_after_three_chat_calls(self):
         fake = FakeAI(invalid=True)
@@ -366,6 +515,23 @@ class TranslationTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "three attempts"):
                 translate_srt(source, Path(directory) / "out.srt", config(), fake)
         self.assertEqual(len(fake.chat.completions.calls), 3)
+
+    def test_transport_failure_is_not_retried_by_schema_loop(self):
+        calls = []
+
+        class BrokenCompletions:
+            def create(self, **_):
+                calls.append(1)
+                raise RuntimeError("transport failed")
+
+        fake = SimpleNamespace(chat=SimpleNamespace(completions=BrokenCompletions()))
+        with tempfile.TemporaryDirectory() as directory, patch("backend.app.time.sleep") as sleep:
+            source = Path(directory) / "in.srt"
+            source.write_bytes(SRT)
+            with self.assertRaisesRegex(PipelineError, "request failed"):
+                translate_srt(source, Path(directory) / "out.srt", config(), fake)
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

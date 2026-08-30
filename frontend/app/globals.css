@@ -74,9 +74,17 @@ h1 { margin: 0; font-size: clamp(36px, 6vw, 62px); line-height: .95; letter-spac
 .progress { height: 4px; margin-top: 20px; overflow: hidden; background: #e3e5e2; border-radius: 4px; }
 .progress span { display: block; width: 35%; height: 100%; background: var(--green); border-radius: inherit; animation: travel 1.5s ease-in-out infinite; }
 @keyframes travel { from { transform: translateX(-120%); } to { transform: translateX(330%); } }
+.batchSummary { margin: 16px 0 0; color: var(--muted); font-size: 12px; font-weight: 700; }
+.batchItems { display: grid; gap: 12px; margin-top: 18px; }
+.batchItem { overflow: hidden; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.batchItemTop { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.batchItemTop strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batchItem > p { margin: 9px 0 0; color: var(--muted); font-size: 13px; }
+.batchItem.failed > .batchItemTop .stage { color: #922f22; background: #fff0ed; }
 .jobError { margin: 18px 0 0; color: #a43d2a; font-weight: 700; }
-dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 22px -22px -22px; background: var(--line); }
-dl div { padding: 15px 22px; background: var(--panel); }
+.batchItem .jobError { color: #a43d2a; }
+.batchItem dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 16px -16px -16px; background: var(--line); }
+.batchItem dl div { padding: 13px 16px; background: var(--panel); }
 dt { margin-bottom: 5px; color: var(--muted); font-size: 11px; }
 dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 700; }
 .error { margin-top: 20px; color: #922f22; border-color: #e2b3aa; background: #fff0ed; }
@@ -90,6 +98,5 @@ footer { padding: 26px 0 0; color: #8a918e; text-align: center; font-size: 11px;
   .tableHead span:last-child, .row > span:last-child { display: none; }
   .actions { align-items: stretch; flex-direction: column; }
   .start { width: 100%; }
-  dl { grid-template-columns: 1fr; }
+  .batchItem dl { grid-template-columns: 1fr; }
 }
-

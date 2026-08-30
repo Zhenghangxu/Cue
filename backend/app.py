@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import random
 import re
 import secrets
 import shutil
@@ -127,18 +128,26 @@ class SubtitleCandidate:
 
 
 @dataclass
-class Job:
-    id: str
+class JobItem:
     path: str
     status: str = "queued"
     message: str = "Waiting to start"
     result: dict[str, Any] | None = None
     error: str | None = None
+
+
+@dataclass
+class Job:
+    id: str
+    items: list[JobItem]
+    status: str = "queued"
+    message: str = "Waiting to start"
+    error: str | None = None
     created_at: float = field(default_factory=time.time)
 
 
 class JobRequest(BaseModel):
-    path: str
+    paths: list[str]
 
 
 def normalize_relative(path: str) -> str:
@@ -471,34 +480,66 @@ class OpenSubtitles:
             follow_redirects=True,
         )
 
+    @staticmethod
+    def _retry_delay(response: httpx.Response | None, attempt: int, operation: str) -> float:
+        if response is not None:
+            header = response.headers.get("retry-after") or response.headers.get("ratelimit-reset")
+            if header:
+                try:
+                    delay = float(header)
+                    if response.headers.get("retry-after") is None and delay > time.time():
+                        delay -= time.time()
+                except ValueError:
+                    try:
+                        from email.utils import parsedate_to_datetime
+
+                        delay = parsedate_to_datetime(header).timestamp() - time.time()
+                    except (TypeError, ValueError):
+                        delay = 0
+                if delay > 60:
+                    raise PipelineError(f"{operation} was rate limited; try again later")
+                return max(0, delay)
+        return 2**attempt + random.uniform(0, 0.25)
+
+    def _request(self, method: str, url: str, operation: str, **kwargs: Any) -> httpx.Response:
+        for attempt in range(3):
+            response: httpx.Response | None = None
+            try:
+                response = self.client.request(method, url, **kwargs)
+            except httpx.HTTPError as exc:
+                if attempt == 2:
+                    raise PipelineError(f"{operation} could not connect") from exc
+            if response is not None and response.status_code not in {429, 500, 502, 503, 504}:
+                return response
+            if attempt == 2:
+                assert response is not None
+                return response
+            delay = self._retry_delay(response, attempt, operation)
+            if response is not None:
+                response.close()
+            time.sleep(delay)
+        raise AssertionError("unreachable")
+
     def _login(self) -> None:
         if not self.username or not self.password:
             raise PipelineError(
                 "OpenSubtitles requires a user token; add OPENSUBTITLE_USERNAME and OPENSUBTITLE_PASSWORD to .env"
             )
-        try:
-            response = self.client.post("login", json={"username": self.username, "password": self.password})
-        except httpx.HTTPError as exc:
-            raise PipelineError("OpenSubtitles login could not connect") from exc
+        response = self._request(
+            "POST",
+            "login",
+            "OpenSubtitles login",
+            json={"username": self.username, "password": self.password},
+        )
         if response.status_code != 200 or not (token := response.json().get("token")):
             raise PipelineError("OpenSubtitles login failed; check the configured username and password")
         self.client.headers["Authorization"] = f"Bearer {token}"
 
     def _search(self, params: dict[str, Any]) -> list[dict[str, Any]]:
-        for attempt in range(3):
-            try:
-                response = self.client.get("subtitles", params=params)
-            except httpx.HTTPError as exc:
-                if attempt == 2:
-                    raise PipelineError("OpenSubtitles search could not connect") from exc
-                time.sleep(attempt + 1)
-                continue
-            if response.status_code == 200:
-                return response.json().get("data", [])
-            if response.status_code not in {429, 500, 502, 503, 504} or attempt == 2:
-                raise PipelineError(f"OpenSubtitles search failed ({response.status_code})")
-            time.sleep(attempt + 1)
-        return []
+        response = self._request("GET", "subtitles", "OpenSubtitles search", params=params)
+        if response.status_code != 200:
+            raise PipelineError(f"OpenSubtitles search failed ({response.status_code})")
+        return response.json().get("data", [])
 
     @staticmethod
     def _candidate(item: dict[str, Any]) -> SubtitleCandidate | None:
@@ -573,13 +614,20 @@ class OpenSubtitles:
     def download(self, candidate: SubtitleCandidate) -> tuple[bytes, dict[str, Any]]:
         if self.username and self.password and "Authorization" not in self.client.headers:
             self._login()
-        try:
-            response = self.client.post("download", json={"file_id": candidate.file_id, "sub_format": "srt"})
-        except httpx.HTTPError as exc:
-            raise PipelineError("OpenSubtitles download request could not connect") from exc
+        response = self._request(
+            "POST",
+            "download",
+            "OpenSubtitles download request",
+            json={"file_id": candidate.file_id, "sub_format": "srt"},
+        )
         if self.username and self.password and response.status_code in {401, 403, 406}:
             self._login()
-            response = self.client.post("download", json={"file_id": candidate.file_id, "sub_format": "srt"})
+            response = self._request(
+                "POST",
+                "download",
+                "OpenSubtitles download request",
+                json={"file_id": candidate.file_id, "sub_format": "srt"},
+            )
         if response.status_code != 200:
             try:
                 message = response.json().get("message")
@@ -595,17 +643,8 @@ class OpenSubtitles:
         if not link:
             raise PipelineError("OpenSubtitles did not return a download link")
 
-        subtitle_response: httpx.Response | None = None
-        for attempt in range(3):
-            try:
-                subtitle_response = self.client.get(link)
-            except httpx.HTTPError:
-                subtitle_response = None
-            if subtitle_response is not None and subtitle_response.status_code == 200:
-                break
-            if attempt < 2:
-                time.sleep(attempt + 1)
-        if not subtitle_response or subtitle_response.status_code != 200:
+        subtitle_response = self._request("GET", link, "Temporary subtitle download")
+        if subtitle_response.status_code != 200:
             raise PipelineError("The temporary subtitle download failed")
         if len(subtitle_response.content) > MAX_SUBTITLE_BYTES:
             raise PipelineError("Downloaded subtitle is unexpectedly large")
@@ -662,7 +701,7 @@ def translate_srt(
     client = client or OpenAI(
         api_key=config.openai_api_key,
         base_url=config.openai_base_url,
-        max_retries=0,
+        max_retries=2,
         timeout=90,
     )
     usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
@@ -687,6 +726,9 @@ def translate_srt(
                     n=1,
                     verbosity="low",
                 )
+            except Exception as exc:
+                raise PipelineError("AI translation request failed") from exc
+            try:
                 content = completion.choices[0].message.content
                 result = json.loads(content or "")
                 rows = result.get("translations", [])
@@ -703,7 +745,7 @@ def translate_srt(
                     usage["totalTokens"] += completion.usage.total_tokens or 0
                 error = None
                 break
-            except Exception as exc:  # SDK, transport, and schema errors share the same bounded retry.
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
                 error = exc
                 if attempt < 2:
                     time.sleep(attempt + 1)
@@ -740,6 +782,8 @@ def sync_subtitle(video_path: str, input_path: Path, output_path: Path, _: Confi
                 str(output_path),
                 "--max-duration-seconds",
                 "300",
+                "--frame-rate",
+                "16000",
                 "--extract-audio-first",
                 "--skip-sync-on-low-quality",
             ],
@@ -810,8 +854,19 @@ def process_video(
         final = temp / "final.srt"
         source.write_bytes(subtitle_bytes)
 
-        progress("synchronizing", "Matching subtitles against a five-minute audio sample")
-        syncer(relative, source, synced, config)
+        if candidate.moviehash_match:
+            try:
+                subtitles = list(srt.parse(source.read_text(encoding="utf-8-sig")))
+                if not subtitles:
+                    raise ValueError("subtitle contains no cues")
+                synced.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
+                progress("synchronizing", "Exact video match; synchronization not needed")
+            except (UnicodeDecodeError, ValueError, srt.SRTParseError):
+                progress("synchronizing", "Matching subtitles against a five-minute audio sample")
+                syncer(relative, source, synced, config)
+        else:
+            progress("synchronizing", "Matching subtitles against a five-minute audio sample")
+            syncer(relative, source, synced, config)
         usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
         if candidate.language == "en":
             progress("translating", "Translating English cues to Simplified Chinese")
@@ -854,39 +909,81 @@ def require_services() -> tuple[Config, WebDAV, OpenSubtitles]:
     return CONFIG, WEBDAV, OPENSUBTITLES
 
 
-def update_job(job_id: str, stage: str, message: str) -> None:
+def update_job(job_id: str, item_index: int, stage: str, message: str) -> None:
     with JOBS_LOCK:
         job = JOBS[job_id]
-        job.status = stage
-        job.message = message
+        item = job.items[item_index]
+        item.status = stage
+        item.message = message
+        job.status = "running"
+        job.message = f"{item_index + 1} of {len(job.items)} · {PurePosixPath(item.path).name} · {message}"
 
 
 def run_job(job_id: str) -> None:
-    config, webdav, opensubtitles = require_services()
     try:
-        result = process_video(
-            JOBS[job_id].path,
-            config,
-            webdav,
-            opensubtitles,
-            lambda stage, message: update_job(job_id, stage, message),
+        config, webdav, opensubtitles = require_services()
+        ai = OpenAI(
+            api_key=config.openai_api_key,
+            base_url=config.openai_base_url,
+            max_retries=2,
+            timeout=90,
         )
         with JOBS_LOCK:
-            JOBS[job_id].status = "completed"
-            JOBS[job_id].message = (
-                "Existing Chinese subtitle found" if result.get("existing") else "Subtitle created successfully"
-            )
-            JOBS[job_id].result = result
-    except PipelineError as exc:
+            job = JOBS[job_id]
+            job.status = "running"
+            job.message = f"Starting 1 of {len(job.items)}"
+            paths = [item.path for item in job.items]
+
+        succeeded = 0
+        for index, path in enumerate(paths):
+            update_job(job_id, index, "running", "Starting")
+            try:
+                result = process_video(
+                    path,
+                    config,
+                    webdav,
+                    opensubtitles,
+                    lambda stage, message, index=index: update_job(job_id, index, stage, message),
+                    translator=lambda source, destination, config: translate_srt(source, destination, config, ai),
+                )
+            except PipelineError as exc:
+                with JOBS_LOCK:
+                    item = JOBS[job_id].items[index]
+                    item.status = "failed"
+                    item.message = "Could not finish"
+                    item.error = str(exc)
+            except Exception:
+                with JOBS_LOCK:
+                    item = JOBS[job_id].items[index]
+                    item.status = "failed"
+                    item.message = "Could not finish"
+                    item.error = "Unexpected internal error"
+            else:
+                succeeded += 1
+                with JOBS_LOCK:
+                    item = JOBS[job_id].items[index]
+                    item.status = "completed"
+                    item.message = (
+                        "Existing Chinese subtitle found" if result.get("existing") else "Subtitle created successfully"
+                    )
+                    item.result = result
+
         with JOBS_LOCK:
-            JOBS[job_id].status = "failed"
-            JOBS[job_id].message = "Job failed"
-            JOBS[job_id].error = str(exc)
+            job = JOBS[job_id]
+            failed = len(job.items) - succeeded
+            job.status = "completed" if succeeded else "failed"
+            job.message = f"{succeeded} of {len(job.items)} videos completed"
+            if failed:
+                job.message += f"; {failed} failed"
+            if not succeeded:
+                job.error = "Every video in the batch failed"
     except Exception:
         with JOBS_LOCK:
-            JOBS[job_id].status = "failed"
-            JOBS[job_id].message = "Job failed"
-            JOBS[job_id].error = "Unexpected internal error"
+            job = JOBS.get(job_id)
+            if job:
+                job.status = "failed"
+                job.message = "Batch failed"
+                job.error = "Unexpected internal error"
 
 
 app = FastAPI(title="Subtitle Maker", version="0.1.0")
@@ -925,16 +1022,20 @@ def files(path: str = Query(default="")) -> dict[str, Any]:
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobRequest) -> dict[str, str]:
     require_services()
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="Select at least one video")
     try:
-        path = normalize_relative(body.path)
+        paths = [normalize_relative(path) for path in body.paths]
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not path:
-        raise HTTPException(status_code=400, detail="Select a video")
+    if any(not path for path in paths):
+        raise HTTPException(status_code=400, detail="Every selected video needs a path")
+    if len(set(paths)) != len(paths):
+        raise HTTPException(status_code=400, detail="A video can only appear once in a batch")
     with JOBS_LOCK:
         if any(job.status not in TERMINAL_STAGES for job in JOBS.values()):
             raise HTTPException(status_code=409, detail="Another subtitle job is already running")
-        job = Job(id=str(uuid.uuid4()), path=path)
+        job = Job(id=str(uuid.uuid4()), items=[JobItem(path=path) for path in paths])
         JOBS[job.id] = job
     EXECUTOR.submit(run_job, job.id)
     return {"jobId": job.id}
