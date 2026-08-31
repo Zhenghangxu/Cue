@@ -147,6 +147,7 @@ export default function Home() {
   const busy = Boolean(job && !TERMINAL.has(job.status));
   const completed = job?.items.filter((item) => item.status === "completed").length ?? 0;
   const failed = job?.items.filter((item) => item.status === "failed").length ?? 0;
+  const current = busy && job ? Math.min(completed + failed + 1, job.items.length) : 0;
 
   return (
     <main>
@@ -157,9 +158,9 @@ export default function Home() {
           <h1>Subtitle Maker</h1>
           <p className="lede">Find, synchronize, and translate subtitles without downloading the full video.</p>
         </div>
-        <div className={`health ${health?.ready ? "ready" : ""}`}>
+        <div className={`health ${busy ? "processing" : health?.ready ? "ready" : ""}`}>
           <span aria-hidden="true" />
-          {health?.ready ? "Ready" : "Setup needed"}
+          {busy && job ? `Processing ${current}/${job.items.length}` : health?.ready ? "Ready" : "Setup needed"}
         </div>
       </header>
 
@@ -169,6 +170,43 @@ export default function Home() {
           <span>{health.configuration}</span>
           {!health.binaries.ffmpeg && <span>FFmpeg is missing.</span>}
           {!health.binaries.ffsubsync && <span>Run <code>uv sync</code> to install ffsubsync.</span>}
+        </section>
+      )}
+
+      {job && (
+        <section className={`job ${job.status}`} aria-live="polite">
+          <div className="jobTop">
+            <div>
+              <p className="eyebrow">CURRENT JOB</p>
+              <h2>{job.status === "completed"
+                ? failed ? "Batch finished with errors" : "Subtitles ready"
+                : job.status === "failed" ? "Batch failed" : job.message}</h2>
+            </div>
+            <span className={`stage ${job.status}`}>{job.status.replaceAll("_", " ")}</span>
+          </div>
+          {busy && <div className="progress"><span /></div>}
+          <p className="batchSummary">{completed} completed · {failed} failed · {job.items.length} total</p>
+          {job.error && <p className="jobError">{job.error}</p>}
+          <div className="batchItems">
+            {job.items.map((item) => (
+              <article className={`batchItem ${item.status}`} key={item.path}>
+                <div className="batchItemTop">
+                  <strong>{item.path.split("/").at(-1)}</strong>
+                  <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+                </div>
+                <p>{item.message}</p>
+                {item.error && <p className="jobError">{item.error}</p>}
+                {item.result && (
+                  <dl>
+                    <div><dt>Uploaded</dt><dd>{item.result.outputPath}</dd></div>
+                    <div><dt>Source</dt><dd>{item.result.sourceLanguage} · {item.result.release}</dd></div>
+                    <div><dt>OpenSubtitles remaining</dt><dd>{item.result.quota.remaining ?? "Unknown"}</dd></div>
+                    <div><dt>AI tokens</dt><dd>{item.result.aiUsage.totalTokens.toLocaleString()}</dd></div>
+                  </dl>
+                )}
+              </article>
+            ))}
+          </div>
         </section>
       )}
 
@@ -216,51 +254,16 @@ export default function Home() {
 
         <div className="actions">
           <div>
-            <span className="label">Selected videos</span>
-            <strong>{selected.length ? `${selected.length} video${selected.length === 1 ? "" : "s"} selected` : "Choose files above"}</strong>
+            <span className="label">{job ? busy ? `Processing ${current}/${job.items.length}` : "Last job" : "Selected videos"}</span>
+            <strong>{job
+              ? `${completed} completed · ${failed} failed · ${job.items.length} total`
+              : selected.length ? `${selected.length} video${selected.length === 1 ? "" : "s"} selected` : "Choose files above"}</strong>
           </div>
           <button className="start" onClick={() => void start()} disabled={!selected.length || busy || !health?.ready}>
             {busy ? "Working…" : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
           </button>
         </div>
       </section>
-
-      {job && (
-        <section className={`job ${job.status}`} aria-live="polite">
-          <div className="jobTop">
-            <div>
-              <p className="eyebrow">CURRENT JOB</p>
-              <h2>{job.status === "completed"
-                ? failed ? "Batch finished with errors" : "Subtitles ready"
-                : job.status === "failed" ? "Batch failed" : job.message}</h2>
-            </div>
-            <span className="stage">{job.status.replaceAll("_", " ")}</span>
-          </div>
-          {busy && <div className="progress"><span /></div>}
-          <p className="batchSummary">{completed} completed · {failed} failed · {job.items.length} total</p>
-          {job.error && <p className="jobError">{job.error}</p>}
-          <div className="batchItems">
-            {job.items.map((item) => (
-              <article className={`batchItem ${item.status}`} key={item.path}>
-                <div className="batchItemTop">
-                  <strong>{item.path.split("/").at(-1)}</strong>
-                  <span className="stage">{item.status.replaceAll("_", " ")}</span>
-                </div>
-                <p>{item.message}</p>
-                {item.error && <p className="jobError">{item.error}</p>}
-                {item.result && (
-                  <dl>
-                    <div><dt>Uploaded</dt><dd>{item.result.outputPath}</dd></div>
-                    <div><dt>Source</dt><dd>{item.result.sourceLanguage} · {item.result.release}</dd></div>
-                    <div><dt>OpenSubtitles remaining</dt><dd>{item.result.quota.remaining ?? "Unknown"}</dd></div>
-                    <div><dt>AI tokens</dt><dd>{item.result.aiUsage.totalTokens.toLocaleString()}</dd></div>
-                  </dl>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
 
       {error && <p className="error" role="alert">{error}</p>}
       <footer>Only files inside the configured WebDAV scan path are visible to this app.</footer>
