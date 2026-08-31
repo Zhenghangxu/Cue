@@ -24,16 +24,31 @@ from urllib.parse import quote, unquote, urljoin, urlsplit
 import httpx
 import srt
 import chardet
-from dotenv import load_dotenv
+import keyring
+from keyring.errors import KeyringError, PasswordDeleteError
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from guessit import guessit
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Subtitle Maker"
+CONFIG_PATH = CONFIG_DIR / "config.json"
+KEYRING_SERVICE = "Subtitle Maker"
+SETTING_DEFAULTS = {
+    "webdav_username": "",
+    "webdav_endpoint": "",
+    "webdav_scan_path": "",
+    "opensubtitles_consumer_name": "subtitle-maker",
+    "opensubtitles_username": "",
+    "openai_base_url": "https://api.openai.com/v1",
+    "openai_model_id": "gpt-5.6-luna",
+    "openai_reasoning_effort": "low",
+}
+SECRET_SETTINGS = ("webdav_password", "opensubtitles_api_key", "opensubtitles_password", "openai_api_key")
 VIDEO_EXTENSIONS = {".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".ts", ".webm"}
 SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".vtt"}
 HASH_BLOCK_SIZE = 64 * 1024
@@ -44,6 +59,23 @@ DAV = "{DAV:}"
 
 class PipelineError(RuntimeError):
     pass
+
+
+def load_saved_settings() -> dict[str, str]:
+    try:
+        stored = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineError("Could not read saved settings") from exc
+    if not isinstance(stored, dict):
+        raise PipelineError("Saved settings must be a JSON object")
+    return SETTING_DEFAULTS | {key: str(value) for key, value in stored.items() if key in SETTING_DEFAULTS}
+
+
+def load_saved_secrets() -> dict[str, str]:
+    try:
+        return {key: value for key in SECRET_SETTINGS if (value := keyring.get_password(KEYRING_SERVICE, key))}
+    except KeyringError as exc:
+        raise PipelineError("Could not read secrets from macOS Keychain") from exc
 
 
 @dataclass(frozen=True)
@@ -63,50 +95,48 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        load_dotenv(BASE_DIR / ".env")
-        required = [
-            "WEBDAV_USERNAME",
-            "WEBDAV_PASSWORD",
-            "WEBDAV_ENDPOINT",
-            "WEBDAV_SCAN_PATH",
-            "OPENSUBTITLE_API_KEY",
-            "OPENSUBTITLE_CONSUMER_NAME",
-            "OPENAI_BASE_URL",
-            "OPENAI_MODEL_ID",
-            "OPENAI_MODEL_THINKING_EFFORT",
-        ]
-        missing = [name for name in required if not os.getenv(name)]
-        key_name = os.getenv("OPENAI_API_ENV_KEY", "")
-        openai_key = (os.getenv(key_name) if key_name else None) or os.getenv("OPENAI_API_KEY")
-        if not openai_key:
-            missing.append(key_name or "OPENAI_API_KEY")
-        if missing:
-            raise PipelineError("Missing environment variables: " + ", ".join(sorted(set(missing))))
+        return cls.from_settings(load_saved_settings(), load_saved_secrets())
 
-        endpoint = os.environ["WEBDAV_ENDPOINT"].strip()
+    @classmethod
+    def from_settings(cls, values: dict[str, str], secrets: dict[str, str]) -> "Config":
+        required = (
+            "webdav_username",
+            "webdav_endpoint",
+            "webdav_scan_path",
+            "opensubtitles_consumer_name",
+            "openai_base_url",
+            "openai_model_id",
+            "openai_reasoning_effort",
+        )
+        missing = [name for name in required if not values.get(name)]
+        missing.extend(name for name in ("webdav_password", "opensubtitles_api_key", "openai_api_key") if not secrets.get(name))
+        if missing:
+            raise PipelineError("Missing settings: " + ", ".join(sorted(set(missing))))
+
+        endpoint = values["webdav_endpoint"].strip()
         if "://" not in endpoint:
             endpoint = "https://" + endpoint
         parsed = urlsplit(endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment:
             raise PipelineError("WEBDAV_ENDPOINT must be an HTTP(S) host or base URL")
 
-        effort = os.environ["OPENAI_MODEL_THINKING_EFFORT"].strip().lower()
+        effort = values["openai_reasoning_effort"].strip().lower()
         if effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
-            raise PipelineError("OPENAI_MODEL_THINKING_EFFORT is invalid")
+            raise PipelineError("OpenAI reasoning effort is invalid")
 
         return cls(
-            webdav_username=os.environ["WEBDAV_USERNAME"],
-            webdav_password=os.environ["WEBDAV_PASSWORD"],
+            webdav_username=values["webdav_username"],
+            webdav_password=secrets["webdav_password"],
             webdav_endpoint=endpoint.rstrip("/") + "/",
-            webdav_scan_path=os.environ["WEBDAV_SCAN_PATH"],
-            opensubtitles_api_key=os.environ["OPENSUBTITLE_API_KEY"],
-            opensubtitles_consumer_name=os.environ["OPENSUBTITLE_CONSUMER_NAME"],
-            openai_base_url=os.environ["OPENAI_BASE_URL"].rstrip("/") + "/",
-            openai_api_key=openai_key,
-            openai_model_id=os.environ["OPENAI_MODEL_ID"],
+            webdav_scan_path=values["webdav_scan_path"],
+            opensubtitles_api_key=secrets["opensubtitles_api_key"],
+            opensubtitles_consumer_name=values["opensubtitles_consumer_name"],
+            openai_base_url=values["openai_base_url"].rstrip("/") + "/",
+            openai_api_key=secrets["openai_api_key"],
+            openai_model_id=values["openai_model_id"],
             openai_reasoning_effort=effort,
-            opensubtitles_username=os.getenv("OPENSUBTITLE_USERNAME") or None,
-            opensubtitles_password=os.getenv("OPENSUBTITLE_PASSWORD") or None,
+            opensubtitles_username=values.get("opensubtitles_username") or None,
+            opensubtitles_password=secrets.get("opensubtitles_password") or None,
         )
 
 
@@ -148,6 +178,12 @@ class Job:
 
 class JobRequest(BaseModel):
     paths: list[str]
+
+
+class SettingsRequest(BaseModel):
+    values: dict[str, str]
+    secrets: dict[str, str] = Field(default_factory=dict)
+    clear_secrets: list[str] = Field(default_factory=list)
 
 
 def normalize_relative(path: str) -> str:
@@ -990,9 +1026,78 @@ app = FastAPI(title="Subtitle Maker", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+
+
+@app.get("/api/settings")
+def get_settings() -> dict[str, Any]:
+    try:
+        values = load_saved_settings()
+        secrets = load_saved_secrets()
+        return {"values": values, "secrets": {key: key in secrets for key in SECRET_SETTINGS}}
+    except PipelineError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.put("/api/settings")
+def update_settings(body: SettingsRequest) -> dict[str, Any]:
+    unknown_values = set(body.values) - SETTING_DEFAULTS.keys()
+    unknown_secrets = (set(body.secrets) | set(body.clear_secrets)) - set(SECRET_SETTINGS)
+    if unknown_values or unknown_secrets:
+        raise HTTPException(status_code=400, detail="Unknown setting")
+
+    values = SETTING_DEFAULTS | body.values
+    try:
+        previous_secrets = load_saved_secrets()
+    except PipelineError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    updates = {key: value for key, value in body.secrets.items() if value}
+    clears = set(body.clear_secrets) - updates.keys()
+    secrets = previous_secrets | updates
+    for key in clears:
+        secrets.pop(key, None)
+    try:
+        Config.from_settings(values, secrets)
+    except PipelineError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temporary: Path | None = None
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(CONFIG_DIR, 0o700)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=CONFIG_DIR, prefix="config.", encoding="utf-8", delete=False
+        ) as output:
+            temporary = Path(output.name)
+            json.dump(values, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o600)
+        for key, value in updates.items():
+            keyring.set_password(KEYRING_SERVICE, key, value)
+        for key in clears:
+            try:
+                keyring.delete_password(KEYRING_SERVICE, key)
+            except PasswordDeleteError:
+                pass
+        os.replace(temporary, CONFIG_PATH)
+    except (OSError, KeyringError) as exc:
+        for key in updates.keys() | clears:
+            try:
+                if value := previous_secrets.get(key):
+                    keyring.set_password(KEYRING_SERVICE, key, value)
+                else:
+                    keyring.delete_password(KEYRING_SERVICE, key)
+            except (KeyringError, PasswordDeleteError):
+                pass
+        raise HTTPException(status_code=500, detail="Could not save settings") from exc
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()
+    return {"saved": True, "message": "Saved securely. Restart Subtitle Maker to apply changes."}
 
 
 @app.get("/api/health")
@@ -1033,8 +1138,14 @@ def create_job(body: JobRequest) -> dict[str, str]:
     if len(set(paths)) != len(paths):
         raise HTTPException(status_code=400, detail="A video can only appear once in a batch")
     with JOBS_LOCK:
-        if any(job.status not in TERMINAL_STAGES for job in JOBS.values()):
-            raise HTTPException(status_code=409, detail="Another subtitle job is already running")
+        queued_paths = {
+            item.path
+            for job in JOBS.values()
+            if job.status not in TERMINAL_STAGES
+            for item in job.items
+        }
+        if queued_paths.intersection(paths):
+            raise HTTPException(status_code=409, detail="A selected video is already in the queue")
         job = Job(id=str(uuid.uuid4()), items=[JobItem(path=path) for path in paths])
         JOBS[job.id] = job
     EXECUTOR.submit(run_job, job.id)

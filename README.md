@@ -9,13 +9,13 @@ Sidecar subtitles are preferred: an existing Chinese `.srt`, `.ass`, `.ssa`, or 
 Requirements: Python 3.13, `uv`, Node.js 20+, and FFmpeg.
 
 ```sh
-cp .env.example .env
-# Fill in .env, then:
 uv sync
 npm --prefix frontend install
+npm --prefix frontend run build
+uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
-The existing `.env` is supported as-is. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require `OPENSUBTITLE_USERNAME` and `OPENSUBTITLE_PASSWORD` so the backend can obtain its 24-hour user token.
+Open <http://127.0.0.1:8000/settings/> and enter the service settings. Secrets are encrypted by macOS Keychain and are never returned to the browser after saving. Non-secret values live in `~/Library/Application Support/Subtitle Maker/config.json`. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require the optional username and password so the backend can obtain its 24-hour user token.
 
 ## Development
 

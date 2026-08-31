@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 type FileEntry = {
   name: string;
@@ -68,7 +69,7 @@ export default function Home() {
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
-  const [job, setJob] = useState<Job | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -101,19 +102,23 @@ export default function Home() {
         setLoading(false);
       });
 
-    const remembered = sessionStorage.getItem("subtitle-maker-job");
-    if (remembered) {
-      api<Job>(`/api/jobs/${remembered}`).then(setJob).catch(() => sessionStorage.removeItem("subtitle-maker-job"));
-    }
+    const remembered = (sessionStorage.getItem("subtitle-maker-jobs")
+      ?? sessionStorage.getItem("subtitle-maker-job")
+      ?? "").split(",").filter(Boolean);
+    if (remembered.length) Promise.all(remembered.map((id) => api<Job>(`/api/jobs/${id}`).catch(() => null)))
+      .then((values) => setJobs(values.filter((value): value is Job => Boolean(value))));
   }, [loadDirectory]);
 
   useEffect(() => {
-    if (!job || TERMINAL.has(job.status)) return;
+    const active = jobs.filter((job) => !TERMINAL.has(job.status));
+    if (!active.length) return;
     const timer = window.setTimeout(() => {
-      api<Job>(`/api/jobs/${job.id}`).then(setJob).catch((reason) => setError(String(reason)));
+      Promise.all(active.map((job) => api<Job>(`/api/jobs/${job.id}`)))
+        .then((updated) => setJobs((current) => current.map((job) => updated.find(({ id }) => id === job.id) ?? job)))
+        .catch((reason) => setError(String(reason)));
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [job]);
+  }, [jobs]);
 
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
@@ -132,22 +137,35 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({ paths }),
       });
-      sessionStorage.setItem("subtitle-maker-job", value.jobId);
-      setJob({
+      const queued = {
         id: value.jobId,
         status: "queued",
         message: "Waiting to start",
         items: paths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
+      };
+      setJobs((current) => {
+        const next = [...current, queued];
+        sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
+        sessionStorage.removeItem("subtitle-maker-job");
+        return next;
       });
+      setSelected([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the job");
     }
   }
 
-  const busy = Boolean(job && !TERMINAL.has(job.status));
-  const completed = job?.items.filter((item) => item.status === "completed").length ?? 0;
-  const failed = job?.items.filter((item) => item.status === "failed").length ?? 0;
-  const current = busy && job ? Math.min(completed + failed + 1, job.items.length) : 0;
+  const items = jobs.flatMap((job) => job.items);
+  const activeItems = jobs.filter((job) => !TERMINAL.has(job.status)).flatMap((job) => job.items);
+  const pendingItems = activeItems.filter((item) => !TERMINAL.has(item.status));
+  const busy = pendingItems.length > 0;
+  const completed = items.filter((item) => item.status === "completed").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const totalTokens = items.reduce((total, item) => total + (item.result?.aiUsage.totalTokens ?? 0), 0);
+  const quotaRemaining = items.reduce<number | null>(
+    (remaining, item) => item.result?.quota.remaining ?? remaining,
+    null,
+  );
 
   return (
     <main>
@@ -158,10 +176,7 @@ export default function Home() {
           <h1>Subtitle Maker</h1>
           <p className="lede">Find, synchronize, and translate subtitles without downloading the full video.</p>
         </div>
-        <div className={`health ${busy ? "processing" : health?.ready ? "ready" : ""}`}>
-          <span aria-hidden="true" />
-          {busy && job ? `Processing ${current}/${job.items.length}` : health?.ready ? "Ready" : "Setup needed"}
-        </div>
+        <Link className="settingsLink" href="/settings/">Settings →</Link>
       </header>
 
       {health && !health.ready && (
@@ -173,41 +188,27 @@ export default function Home() {
         </section>
       )}
 
-      {job && (
-        <section className={`job ${job.status}`} aria-live="polite">
-          <div className="jobTop">
-            <div>
-              <p className="eyebrow">CURRENT JOB</p>
-              <h2>{job.status === "completed"
-                ? failed ? "Batch finished with errors" : "Subtitles ready"
-                : job.status === "failed" ? "Batch failed" : job.message}</h2>
+      {items.length > 0 && (
+        <aside className="queue" aria-live="polite" aria-label="Subtitle queue">
+          <div className="queueHeader">
+            <div className="queueTitle">
+              {busy && <span className="spinner" aria-hidden="true" />}
+              <div><p className="eyebrow">QUEUE</p><strong>{busy ? `${pendingItems.length} active` : "All finished"}</strong></div>
             </div>
-            <span className={`stage ${job.status}`}>{job.status.replaceAll("_", " ")}</span>
+            <span>{completed} done · {failed} failed</span>
           </div>
-          {busy && <div className="progress"><span /></div>}
-          <p className="batchSummary">{completed} completed · {failed} failed · {job.items.length} total</p>
-          {job.error && <p className="jobError">{job.error}</p>}
-          <div className="batchItems">
-            {job.items.map((item) => (
-              <article className={`batchItem ${item.status}`} key={item.path}>
-                <div className="batchItemTop">
-                  <strong>{item.path.split("/").at(-1)}</strong>
-                  <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+          <div className="queueItems">
+            {items.map((item, index) => (
+              <div className="queueItem" key={`${item.path}-${index}`}>
+                <div>
+                  <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
+                  <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
                 </div>
-                <p>{item.message}</p>
-                {item.error && <p className="jobError">{item.error}</p>}
-                {item.result && (
-                  <dl>
-                    <div><dt>Uploaded</dt><dd>{item.result.outputPath}</dd></div>
-                    <div><dt>Source</dt><dd>{item.result.sourceLanguage} · {item.result.release}</dd></div>
-                    <div><dt>OpenSubtitles remaining</dt><dd>{item.result.quota.remaining ?? "Unknown"}</dd></div>
-                    <div><dt>AI tokens</dt><dd>{item.result.aiUsage.totalTokens.toLocaleString()}</dd></div>
-                  </dl>
-                )}
-              </article>
+                <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+              </div>
             ))}
           </div>
-        </section>
+        </aside>
       )}
 
       <section className="workspace" aria-label="WebDAV video browser">
@@ -215,7 +216,7 @@ export default function Home() {
           {crumbs.map((crumb, index) => (
             <span key={crumb.path || "root"}>
               {index > 0 && <b aria-hidden="true">/</b>}
-              <button onClick={() => void loadDirectory(crumb.path)} disabled={loading || busy}>
+              <button onClick={() => void loadDirectory(crumb.path)} disabled={loading}>
                 {crumb.name}
               </button>
             </span>
@@ -229,7 +230,7 @@ export default function Home() {
           {loading && <div className="empty">Loading this directory…</div>}
           {!loading && entries.length === 0 && <div className="empty">No supported videos or folders here.</div>}
           {!loading && entries.map((entry) => entry.type === "directory" ? (
-            <button className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)} disabled={busy}>
+            <button className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
               <span className="name"><i aria-hidden="true">↳</i>{entry.name}</span><span>Folder</span><span>—</span>
             </button>
           ) : (
@@ -242,7 +243,7 @@ export default function Home() {
                   onChange={(event) => setSelected((current) => event.target.checked
                     ? [...current, entry.path]
                     : current.filter((path) => path !== entry.path))}
-                  disabled={busy}
+                  disabled={pendingItems.some((item) => item.path === entry.path)}
                 />
                 {entry.name}
               </span>
@@ -254,13 +255,11 @@ export default function Home() {
 
         <div className="actions">
           <div>
-            <span className="label">{job ? busy ? `Processing ${current}/${job.items.length}` : "Last job" : "Selected videos"}</span>
-            <strong>{job
-              ? `${completed} completed · ${failed} failed · ${job.items.length} total`
-              : selected.length ? `${selected.length} video${selected.length === 1 ? "" : "s"} selected` : "Choose files above"}</strong>
+            <span className="label">Usage</span>
+            <strong>{totalTokens.toLocaleString()} AI tokens · {quotaRemaining ?? "—"} OpenSubtitles remaining</strong>
           </div>
-          <button className="start" onClick={() => void start()} disabled={!selected.length || busy || !health?.ready}>
-            {busy ? "Working…" : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
+          <button className="start" onClick={() => void start()} disabled={!selected.length || !health?.ready}>
+            {busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
           </button>
         </div>
       </section>

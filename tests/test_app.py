@@ -21,6 +21,7 @@ from backend.app import (
     JobRequest,
     OpenSubtitles,
     PipelineError,
+    SettingsRequest,
     SubtitleCandidate,
     WebDAV,
     batch_cues,
@@ -30,9 +31,11 @@ from backend.app import (
     normalize_relative,
     process_video,
     create_job,
+    get_settings,
     run_job,
     sync_subtitle,
     translate_srt,
+    update_settings,
 )
 from fastapi import HTTPException
 
@@ -56,6 +59,47 @@ SRT = b"1\n00:00:01,000 --> 00:00:03,000\nHello there.\n\n"
 
 
 class CoreTests(unittest.TestCase):
+    def test_settings_keep_secrets_in_keyring_and_config_out_of_env(self):
+        values = {
+            "webdav_username": "user",
+            "webdav_endpoint": "https://example.test/dav",
+            "webdav_scan_path": "Media",
+            "opensubtitles_consumer_name": "tests",
+            "opensubtitles_username": "subtitle-user",
+            "openai_base_url": "https://ai.example.test/v1",
+            "openai_model_id": "model",
+            "openai_reasoning_effort": "low",
+        }
+        secrets = {
+            "webdav_password": "webdav-secret",
+            "opensubtitles_api_key": "subtitle-key",
+            "opensubtitles_password": "subtitle-secret",
+            "openai_api_key": "ai-secret",
+        }
+        stored = {}
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("backend.app.CONFIG_DIR", Path(directory)),
+            patch("backend.app.CONFIG_PATH", Path(directory) / "config.json"),
+            patch("backend.app.keyring.get_password", side_effect=lambda _service, key: stored.get(key)),
+            patch("backend.app.keyring.set_password", side_effect=lambda _service, key, value: stored.__setitem__(key, value)),
+            patch("backend.app.keyring.delete_password", side_effect=lambda _service, key: stored.pop(key, None)),
+        ):
+            self.assertTrue(update_settings(SettingsRequest(values=values, secrets=secrets))["saved"])
+            response = get_settings()
+            self.assertEqual(response["values"], values)
+            self.assertTrue(all(response["secrets"].values()))
+            config_text = (Path(directory) / "config.json").read_text()
+            self.assertNotIn("secret", config_text)
+            self.assertEqual((Path(directory) / "config.json").stat().st_mode & 0o777, 0o600)
+
+            update_settings(SettingsRequest(values=values, clear_secrets=["opensubtitles_password"]))
+            self.assertNotIn("opensubtitles_password", stored)
+            with self.assertRaises(HTTPException) as raised:
+                update_settings(SettingsRequest(values=values | {"unknown": "value"}))
+            self.assertEqual(raised.exception.status_code, 400)
+
     def test_paths_cannot_escape_scan_root(self):
         self.assertEqual(normalize_relative("Shows/Series/Episode.mkv"), "Shows/Series/Episode.mkv")
         for value in ("../secret", "Shows/../secret", "/etc/passwd", "C:\\secret", "%2e%2e/secret"):
@@ -414,8 +458,8 @@ class BatchJobTests(unittest.TestCase):
         with JOBS_LOCK:
             JOBS.clear()
 
-    def test_create_job_validates_paths_and_keeps_order(self):
-        with patch("backend.app.require_services"), patch("backend.app.EXECUTOR.submit"):
+    def test_create_job_validates_paths_keeps_order_and_queues_more(self):
+        with patch("backend.app.require_services"), patch("backend.app.EXECUTOR.submit") as submit:
             for paths in ([], ["Movie.mkv", "./Movie.mkv"], ["../Movie.mkv"]):
                 with self.subTest(paths=paths), self.assertRaises(HTTPException) as raised:
                     create_job(JobRequest(paths=paths))
@@ -423,8 +467,11 @@ class BatchJobTests(unittest.TestCase):
 
             response = create_job(JobRequest(paths=["B.mkv", "A.mkv"]))
             self.assertEqual([item.path for item in JOBS[response["jobId"]].items], ["B.mkv", "A.mkv"])
+            queued = create_job(JobRequest(paths=["C.mkv"]))
+            self.assertEqual([item.path for item in JOBS[queued["jobId"]].items], ["C.mkv"])
+            self.assertEqual(submit.call_count, 2)
             with self.assertRaises(HTTPException) as raised:
-                create_job(JobRequest(paths=["C.mkv"]))
+                create_job(JobRequest(paths=["A.mkv"]))
             self.assertEqual(raised.exception.status_code, 409)
 
     def test_batch_continues_after_item_failure(self):
