@@ -261,7 +261,7 @@ export default function Home() {
         <div className="actions">
           <div>
             <span className="label">Usage</span>
-            <strong>{totalTokens.toLocaleString()} AI tokens · <span className="quotaNumber">{quotaRemaining ?? "—"}</span> subtitles remain</strong>
+            <strong><span className="usageNumber">{totalTokens.toLocaleString()}</span> AI tokens · <span className="usageNumber">{quotaRemaining ?? "—"}</span> subtitles remain</strong>
           </div>
           <button className="start" onClick={() => void start()} disabled={!selected.length || !health?.ready}>
             {busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
