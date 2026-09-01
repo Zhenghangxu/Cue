@@ -9,8 +9,8 @@ dependencies = [
   "ffsubsync==0.5.1",
   "guessit>=3.8,<4",
   "httpx>=0.28,<1",
-  "keyring>=25,<26",
   "openai>=2,<3",
+  "python-dotenv>=1,<2",
   "srt>=3.5,<4",
   "uvicorn[standard]>=0.35,<1",
 ]

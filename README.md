@@ -15,7 +15,7 @@ npm --prefix frontend run build
 uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000/settings/> and enter the service settings. Secrets are encrypted by macOS Keychain and are never returned to the browser after saving. Non-secret values live in `~/Library/Application Support/Subtitle Maker/config.json`. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require the optional username and password so the backend can obtain its 24-hour user token.
+Open <http://127.0.0.1:8000/settings/> and enter the service settings. Secrets are saved as plaintext in the ignored project-root `.env` file and are never returned to the browser after saving. Non-secret values live in `~/Library/Application Support/Subtitle Maker/config.json`. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require the optional username and password so the backend can obtain its 24-hour user token.
 
 ## Development
 

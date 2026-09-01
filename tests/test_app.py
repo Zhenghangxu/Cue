@@ -59,7 +59,7 @@ SRT = b"1\n00:00:01,000 --> 00:00:03,000\nHello there.\n\n"
 
 
 class CoreTests(unittest.TestCase):
-    def test_settings_keep_secrets_in_keyring_and_config_out_of_env(self):
+    def test_settings_save_secrets_to_env_and_not_config(self):
         values = {
             "webdav_username": "user",
             "webdav_endpoint": "https://example.test/dav",
@@ -76,15 +76,11 @@ class CoreTests(unittest.TestCase):
             "opensubtitles_password": "subtitle-secret",
             "openai_api_key": "ai-secret",
         }
-        stored = {}
-
         with (
             tempfile.TemporaryDirectory() as directory,
             patch("backend.app.CONFIG_DIR", Path(directory)),
             patch("backend.app.CONFIG_PATH", Path(directory) / "config.json"),
-            patch("backend.app.keyring.get_password", side_effect=lambda _service, key: stored.get(key)),
-            patch("backend.app.keyring.set_password", side_effect=lambda _service, key, value: stored.__setitem__(key, value)),
-            patch("backend.app.keyring.delete_password", side_effect=lambda _service, key: stored.pop(key, None)),
+            patch("backend.app.ENV_PATH", Path(directory) / ".env"),
         ):
             self.assertTrue(update_settings(SettingsRequest(values=values, secrets=secrets))["saved"])
             response = get_settings()
@@ -93,9 +89,13 @@ class CoreTests(unittest.TestCase):
             config_text = (Path(directory) / "config.json").read_text()
             self.assertNotIn("secret", config_text)
             self.assertEqual((Path(directory) / "config.json").stat().st_mode & 0o777, 0o600)
+            env_text = (Path(directory) / ".env").read_text()
+            self.assertIn("WEBDAV_PASSWORD='webdav-secret'", env_text)
+            self.assertIn("OPENAI_API_KEY='ai-secret'", env_text)
+            self.assertEqual((Path(directory) / ".env").stat().st_mode & 0o777, 0o600)
 
             update_settings(SettingsRequest(values=values, clear_secrets=["opensubtitles_password"]))
-            self.assertNotIn("opensubtitles_password", stored)
+            self.assertNotIn("OPENSUBTITLES_PASSWORD", (Path(directory) / ".env").read_text())
             with self.assertRaises(HTTPException) as raised:
                 update_settings(SettingsRequest(values=values | {"unknown": "value"}))
             self.assertEqual(raised.exception.status_code, 400)
@@ -173,6 +173,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(data, SRT)
         self.assertEqual(quota["remaining"], 4)
         self.assertTrue(requests[0].url.path.endswith("/login"))
+
+    def test_opensubtitles_loads_remaining_quota(self):
+        def handler(request: httpx.Request):
+            if request.url.path.endswith("/login"):
+                return httpx.Response(200, json={"token": "jwt"})
+            self.assertEqual(request.headers.get("authorization"), "Bearer jwt")
+            return httpx.Response(200, json={"data": {"remaining_downloads": 20}})
+
+        authenticated = Config(**{
+            **config().__dict__,
+            "opensubtitles_username": "member",
+            "opensubtitles_password": "secret",
+        })
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            transport=httpx.MockTransport(handler),
+        )
+        self.assertEqual(OpenSubtitles(authenticated, client).remaining_downloads(), 20)
 
     def test_opensubtitles_retries_server_and_rate_limit_responses(self):
         responses = iter([

@@ -11,7 +11,7 @@ const SECTIONS: { title: string; fields: SettingField[] }[] = [
     fields: [
       { name: "webdav_username", label: "Username" },
       { name: "webdav_password", label: "Password", secret: true },
-      { name: "webdav_endpoint", label: "Endpoint", type: "url" },
+      { name: "webdav_endpoint", label: "Endpoint" },
       { name: "webdav_scan_path", label: "Scan path" },
     ],
   },
@@ -99,7 +99,7 @@ export default function Settings() {
         <div>
           <p className="eyebrow">SUBTITLE MAKER</p>
           <h1>Settings</h1>
-          <p className="lede">Secrets stay encrypted in your macOS Keychain.</p>
+          <p className="lede">Secrets are saved locally in the project&apos;s .env file.</p>
         </div>
         <Link className="settingsLink" href="/">← Media</Link>
       </header>
@@ -132,7 +132,7 @@ export default function Settings() {
                       id={field.name}
                       type={field.secret ? "password" : field.type ?? "text"}
                       value={field.secret ? secretValues[field.name] ?? "" : values[field.name] ?? ""}
-                      placeholder={field.secret && storedSecrets[field.name] ? "Stored in Keychain" : ""}
+                      placeholder={field.secret && storedSecrets[field.name] ? "Stored in .env" : ""}
                       onChange={(event) => field.secret
                         ? (setSecretValues((current) => ({ ...current, [field.name]: event.target.value })),
                           setClearSecrets((current) => current.filter((name) => name !== field.name)))
@@ -144,7 +144,7 @@ export default function Settings() {
                   )}
                   {field.secret && storedSecrets[field.name] && (
                     <span className="secretState">
-                      Stored in Keychain
+                      Stored in .env
                       <span><input
                         type="checkbox"
                         aria-label={`Clear ${field.label}`}

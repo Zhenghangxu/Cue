@@ -24,8 +24,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit
 import httpx
 import srt
 import chardet
-import keyring
-from keyring.errors import KeyringError, PasswordDeleteError
+from dotenv import dotenv_values, set_key, unset_key
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -37,7 +36,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Subtitle Maker"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-KEYRING_SERVICE = "Subtitle Maker"
+ENV_PATH = BASE_DIR / ".env"
 SETTING_DEFAULTS = {
     "webdav_username": "",
     "webdav_endpoint": "",
@@ -49,6 +48,7 @@ SETTING_DEFAULTS = {
     "openai_reasoning_effort": "low",
 }
 SECRET_SETTINGS = ("webdav_password", "opensubtitles_api_key", "opensubtitles_password", "openai_api_key")
+SECRET_ENV_NAMES = {key: key.upper() for key in SECRET_SETTINGS}
 VIDEO_EXTENSIONS = {".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".ts", ".webm"}
 SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".vtt"}
 HASH_BLOCK_SIZE = 64 * 1024
@@ -73,9 +73,10 @@ def load_saved_settings() -> dict[str, str]:
 
 def load_saved_secrets() -> dict[str, str]:
     try:
-        return {key: value for key in SECRET_SETTINGS if (value := keyring.get_password(KEYRING_SERVICE, key))}
-    except KeyringError as exc:
-        raise PipelineError("Could not read secrets from macOS Keychain") from exc
+        stored = dotenv_values(ENV_PATH, interpolate=False)
+        return {key: value for key, name in SECRET_ENV_NAMES.items() if (value := stored.get(name))}
+    except (OSError, UnicodeError) as exc:
+        raise PipelineError("Could not read secrets from .env") from exc
 
 
 @dataclass(frozen=True)
@@ -690,6 +691,17 @@ class OpenSubtitles:
         }
         return subtitle_response.content, quota
 
+    def remaining_downloads(self) -> int:
+        if self.username and self.password and "Authorization" not in self.client.headers:
+            self._login()
+        response = self._request("GET", "infos/user", "OpenSubtitles user info")
+        if response.status_code != 200:
+            raise PipelineError(f"OpenSubtitles user info failed ({response.status_code})")
+        remaining = response.json().get("data", {}).get("remaining_downloads")
+        if not isinstance(remaining, int) or remaining < 0:
+            raise PipelineError("OpenSubtitles returned an invalid download quota")
+        return remaining
+
 
 TRANSLATION_INSTRUCTIONS = (
     "Translate every supplied English subtitle cue into natural Simplified Chinese. "
@@ -1077,27 +1089,19 @@ def update_settings(body: SettingsRequest) -> dict[str, Any]:
             os.fsync(output.fileno())
         os.chmod(temporary, 0o600)
         for key, value in updates.items():
-            keyring.set_password(KEYRING_SERVICE, key, value)
+            set_key(ENV_PATH, SECRET_ENV_NAMES[key], value)
         for key in clears:
-            try:
-                keyring.delete_password(KEYRING_SERVICE, key)
-            except PasswordDeleteError:
-                pass
+            if ENV_PATH.exists():
+                unset_key(ENV_PATH, SECRET_ENV_NAMES[key])
+        if ENV_PATH.exists():
+            os.chmod(ENV_PATH, 0o600)
         os.replace(temporary, CONFIG_PATH)
-    except (OSError, KeyringError) as exc:
-        for key in updates.keys() | clears:
-            try:
-                if value := previous_secrets.get(key):
-                    keyring.set_password(KEYRING_SERVICE, key, value)
-                else:
-                    keyring.delete_password(KEYRING_SERVICE, key)
-            except (KeyringError, PasswordDeleteError):
-                pass
+    except OSError as exc:
         raise HTTPException(status_code=500, detail="Could not save settings") from exc
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
-    return {"saved": True, "message": "Saved securely. Restart Subtitle Maker to apply changes."}
+    return {"saved": True, "message": "Saved to .env. Restart Subtitle Maker to apply changes."}
 
 
 @app.get("/api/health")
@@ -1122,6 +1126,15 @@ def files(path: str = Query(default="")) -> dict[str, Any]:
         return {"path": relative, "entries": [asdict(entry) for entry in webdav.list(relative)]}
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/quota")
+def quota() -> dict[str, int]:
+    _, _, opensubtitles = require_services()
+    try:
+        return {"remaining": opensubtitles.remaining_downloads()}
+    except PipelineError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/jobs", status_code=202)

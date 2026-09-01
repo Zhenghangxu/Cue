@@ -70,6 +70,7 @@ export default function Home() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [initialQuotaRemaining, setInitialQuotaRemaining] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -94,8 +95,12 @@ export default function Home() {
     api<Health>("/api/health")
       .then((value) => {
         setHealth(value);
-        if (value.ready) void loadDirectory("");
-        else setLoading(false);
+        if (value.ready) {
+          void loadDirectory("");
+          void api<{ remaining: number }>("/api/quota")
+            .then(({ remaining }) => setInitialQuotaRemaining(remaining))
+            .catch(() => setInitialQuotaRemaining(null));
+        } else setLoading(false);
       })
       .catch((reason) => {
         setError(reason instanceof Error ? reason.message : "Backend is unavailable");
@@ -164,7 +169,7 @@ export default function Home() {
   const totalTokens = items.reduce((total, item) => total + (item.result?.aiUsage.totalTokens ?? 0), 0);
   const quotaRemaining = items.reduce<number | null>(
     (remaining, item) => item.result?.quota.remaining ?? remaining,
-    null,
+    initialQuotaRemaining,
   );
 
   return (
@@ -256,7 +261,7 @@ export default function Home() {
         <div className="actions">
           <div>
             <span className="label">Usage</span>
-            <strong>{totalTokens.toLocaleString()} AI tokens · {quotaRemaining ?? "—"} OpenSubtitles remaining</strong>
+            <strong>{totalTokens.toLocaleString()} AI tokens · <span className="quotaNumber">{quotaRemaining ?? "—"}</span> subtitles remain</strong>
           </div>
           <button className="start" onClick={() => void start()} disabled={!selected.length || !health?.ready}>
             {busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
