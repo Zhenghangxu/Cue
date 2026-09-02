@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import posixpath
 import random
@@ -26,6 +27,8 @@ import srt
 import chardet
 from dotenv import dotenv_values, set_key, unset_key
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -80,6 +83,7 @@ HASH_BLOCK_SIZE = 64 * 1024
 MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 TERMINAL_STAGES = {"completed", "failed"}
 DAV = "{DAV:}"
+LOGGER = logging.getLogger("uvicorn.error")
 
 
 class PipelineError(RuntimeError):
@@ -1091,6 +1095,7 @@ def run_job(job_id: str) -> None:
                     item.message = "Could not finish"
                     item.error = str(exc)
             except Exception:
+                LOGGER.exception("job_item_crashed job_id=%s path=%r", job_id, path)
                 with JOBS_LOCK:
                     item = JOBS[job_id].items[index]
                     item.status = "failed"
@@ -1114,6 +1119,7 @@ def run_job(job_id: str) -> None:
             if not succeeded:
                 job.error = "Every video in the batch failed"
     except Exception:
+        LOGGER.exception("job_crashed job_id=%s", job_id)
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if job:
@@ -1129,6 +1135,77 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+
+
+def request_path(request: Request) -> str:
+    route = request.scope.get("route")
+    return getattr(route, "path", request.url.path)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next: Callable[[Request], Any]) -> Response:
+    request_id = uuid.uuid4().hex
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        LOGGER.exception(
+            "request_crashed request_id=%s method=%s path=%s query=%r duration_ms=%.1f client=%s",
+            request_id,
+            request.method,
+            request_path(request),
+            request.url.query,
+            (time.perf_counter() - started) * 1000,
+            request.client.host if request.client else "unknown",
+        )
+        raise
+    response.headers["X-Request-ID"] = request_id
+    LOGGER.info(
+        "request_finished request_id=%s method=%s path=%s query=%r status=%s duration_ms=%.1f client=%s",
+        request_id,
+        request.method,
+        request_path(request),
+        request.url.query,
+        response.status_code,
+        (time.perf_counter() - started) * 1000,
+        request.client.host if request.client else "unknown",
+    )
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def log_http_error(request: Request, exc: HTTPException) -> Response:
+    LOGGER.log(
+        logging.ERROR if exc.status_code >= 500 else logging.WARNING,
+        "request_rejected request_id=%s method=%s path=%s query=%r status=%s detail=%r client=%s",
+        request.state.request_id,
+        request.method,
+        request_path(request),
+        request.url.query,
+        exc.status_code,
+        exc.detail,
+        request.client.host if request.client else "unknown",
+    )
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request: Request, exc: RequestValidationError) -> Response:
+    errors = [
+        {"field": ".".join(map(str, error["loc"])), "type": error["type"], "message": error["msg"]}
+        for error in exc.errors()
+    ]
+    LOGGER.warning(
+        "request_validation_failed request_id=%s method=%s path=%s query=%r status=422 errors=%s client=%s",
+        request.state.request_id,
+        request.method,
+        request_path(request),
+        request.url.query,
+        json.dumps(errors, ensure_ascii=False),
+        request.client.host if request.client else "unknown",
+    )
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/api/settings")

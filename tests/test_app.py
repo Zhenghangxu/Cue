@@ -37,8 +37,10 @@ from backend.app import (
     sync_subtitle,
     translate_srt,
     update_settings,
+    app,
 )
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 
 def config() -> Config:
@@ -593,6 +595,29 @@ class BatchJobTests(unittest.TestCase):
     def tearDown(self):
         with JOBS_LOCK:
             JOBS.clear()
+
+    def test_backend_logs_rejected_requests_with_correlation_id(self):
+        with (
+            patch("backend.app.require_services", return_value=(config(), object(), object())),
+            TestClient(app) as client,
+            self.assertLogs("uvicorn.error", level="INFO") as captured,
+        ):
+            rejected = client.post("/api/jobs", json={"paths": []})
+            invalid = client.put(
+                "/api/settings",
+                json={"values": [], "secrets": {"openai_api_key": "must-not-be-logged"}},
+            )
+
+        logs = "\n".join(captured.output)
+        self.assertEqual(rejected.status_code, 400)
+        self.assertTrue(rejected.headers["X-Request-ID"])
+        self.assertEqual(invalid.status_code, 422)
+        self.assertTrue(invalid.headers["X-Request-ID"])
+        self.assertIn("request_rejected", logs)
+        self.assertIn("detail='Select at least one video'", logs)
+        self.assertIn("request_validation_failed", logs)
+        self.assertIn('"field": "body.values"', logs)
+        self.assertNotIn("must-not-be-logged", logs)
 
     def test_create_job_validates_paths_keeps_order_and_queues_more(self):
         job_config = Config(**(config().__dict__ | {"target_language": "es"}))

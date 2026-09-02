@@ -242,7 +242,7 @@ export default function Home() {
           {crumbs.map((crumb, index) => (
             <span key={crumb.path || "root"}>
               {index > 0 && <b aria-hidden="true">/</b>}
-              <button onClick={() => void loadDirectory(crumb.path)} disabled={loading}>
+              <button title={crumb.name} onClick={() => void loadDirectory(crumb.path)} disabled={loading}>
                 {crumb.name}
               </button>
             </span>
