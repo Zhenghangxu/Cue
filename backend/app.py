@@ -250,6 +250,11 @@ def normalized_title(value: str) -> str:
     return re.sub(r"[^\w]+", "", value.casefold(), flags=re.UNICODE)
 
 
+def normalize_release_filename(filename: str) -> str:
+    match = re.fullmatch(r"\[[^]]+\]\[([^]]+)\]\[(\d+)\](?:\[[^]]+\])*(\.[^.]+)", filename)
+    return f"{match.group(1)} {match.group(2)}{match.group(3)}" if match else filename
+
+
 def language_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
     video = PurePosixPath(normalize_relative(video_path))
     parent = "" if str(video.parent) == "." else str(video.parent)
@@ -624,7 +629,16 @@ class OpenSubtitles:
     def _search(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         response = self._request("GET", "subtitles", "OpenSubtitles search", params=params)
         if response.status_code != 200:
-            raise PipelineError(f"OpenSubtitles search failed ({response.status_code})")
+            try:
+                payload = response.json()
+                detail = payload.get("errors") or payload.get("message") if isinstance(payload, dict) else None
+            except ValueError:
+                detail = None
+            if isinstance(detail, list):
+                detail = ", ".join(map(str, detail))
+            raise PipelineError(
+                f"OpenSubtitles search failed ({response.status_code}){f': {detail}' if detail else ''}"
+            )
         return response.json().get("data", [])
 
     @staticmethod
@@ -647,7 +661,9 @@ class OpenSubtitles:
 
     @staticmethod
     def _metadata_match(item: dict[str, Any], guessed: dict[str, Any]) -> bool:
-        details = item.get("attributes", {}).get("feature_details", {})
+        details = item.get("attributes", {}).get("feature_details") or {}
+        if not isinstance(details, dict):
+            return False
         expected_title = normalized_title(str(guessed.get("title", "")))
         if not expected_title:
             return False
@@ -682,13 +698,13 @@ class OpenSubtitles:
         if candidate:
             return candidate
 
-        guessed = guessit(filename)
+        guessed = guessit(normalize_release_filename(filename))
         params: dict[str, Any] = {
             "languages": language_query,
             "query": str(guessed.get("title", "")).casefold(),
             "type": guessed.get("type", "movie"),
         }
-        if guessed.get("year"):
+        if guessed.get("type") != "episode" and guessed.get("year"):
             params["year"] = guessed["year"]
         if guessed.get("type") == "episode":
             params.update(season_number=guessed.get("season"), episode_number=guessed.get("episode"))

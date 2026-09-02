@@ -223,6 +223,67 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(OpenSubtitles(config(), client)._search({"query": "movie"}), [])
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.1, 7.0])
 
+    def test_opensubtitles_reports_api_error_detail(self):
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(400, json={"errors": ["Not enough parameters"]})
+            ),
+        )
+        with self.assertRaisesRegex(
+            PipelineError, r"OpenSubtitles search failed \(400\): Not enough parameters"
+        ):
+            OpenSubtitles(config(), client)._search({"query": ""})
+
+    def test_opensubtitles_normalizes_bracketed_anime_release(self):
+        requests = []
+
+        def handler(request: httpx.Request):
+            requests.append(request)
+            return httpx.Response(200, json={"data": []})
+
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            transport=httpx.MockTransport(handler),
+        )
+        with self.assertRaisesRegex(PipelineError, "No reliable requested subtitle"):
+            OpenSubtitles(config(), client).find(
+                "[Airota][Sousou no Frieren][29][1080p HEVC-10bit AAC ASS].mkv",
+                "9e433af2ca9cd6a5",
+                ("zh-cn", "en"),
+            )
+
+        self.assertEqual(requests[1].url.params["query"], "sousou no frieren")
+        self.assertEqual(requests[1].url.params["episode_number"], "29")
+
+    def test_opensubtitles_ignores_missing_feature_details(self):
+        self.assertFalse(
+            OpenSubtitles._metadata_match(
+                {"attributes": {"feature_details": None}},
+                {"title": "Slow Horses", "type": "episode", "season": 2, "episode": 2},
+            )
+        )
+
+    def test_opensubtitles_episode_search_omits_series_year(self):
+        requests = []
+
+        def handler(request: httpx.Request):
+            requests.append(request)
+            return httpx.Response(200, json={"data": []})
+
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            transport=httpx.MockTransport(handler),
+        )
+        with self.assertRaisesRegex(PipelineError, "No reliable requested subtitle"):
+            OpenSubtitles(config(), client).find(
+                "Slow Horses (2022) - S02E02 - From Upshott With Love.mkv",
+                "9e433af2ca9cd6a5",
+                ("en",),
+            )
+
+        self.assertNotIn("year", requests[1].url.params)
+
     def test_sync_uses_16khz_speech_analysis(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.srt"
