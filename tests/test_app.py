@@ -23,6 +23,7 @@ from backend.app import (
     PipelineError,
     SettingsRequest,
     SubtitleCandidate,
+    TARGET_LANGUAGES,
     WebDAV,
     batch_cues,
     calculate_moviehash,
@@ -52,6 +53,8 @@ def config() -> Config:
         openai_api_key="ai-key",
         openai_model_id="gpt-5.6-luna",
         openai_reasoning_effort="low",
+        target_language="zh-cn",
+        default_subtitle_mode="bilingual",
     )
 
 
@@ -69,6 +72,8 @@ class CoreTests(unittest.TestCase):
             "openai_base_url": "https://ai.example.test/v1",
             "openai_model_id": "model",
             "openai_reasoning_effort": "low",
+            "target_language": "zh-cn",
+            "default_subtitle_mode": "bilingual",
         }
         secrets = {
             "webdav_password": "webdav-secret",
@@ -82,9 +87,14 @@ class CoreTests(unittest.TestCase):
             patch("backend.app.CONFIG_PATH", Path(directory) / "config.json"),
             patch("backend.app.ENV_PATH", Path(directory) / ".env"),
         ):
+            defaults = get_settings()["values"]
+            self.assertEqual(defaults["target_language"], "zh-cn")
+            self.assertEqual(defaults["default_subtitle_mode"], "bilingual")
             self.assertTrue(update_settings(SettingsRequest(values=values, secrets=secrets))["saved"])
             response = get_settings()
             self.assertEqual(response["values"], values)
+            self.assertEqual(len(response["options"]["target_languages"]), 20)
+            self.assertEqual(response["options"]["subtitle_modes"][-1], {"value": "bilingual", "label": "English & target language"})
             self.assertTrue(all(response["secrets"].values()))
             config_text = (Path(directory) / "config.json").read_text()
             self.assertNotIn("secret", config_text)
@@ -98,6 +108,12 @@ class CoreTests(unittest.TestCase):
             self.assertNotIn("OPENSUBTITLES_PASSWORD", (Path(directory) / ".env").read_text())
             with self.assertRaises(HTTPException) as raised:
                 update_settings(SettingsRequest(values=values | {"unknown": "value"}))
+            self.assertEqual(raised.exception.status_code, 400)
+            with self.assertRaises(HTTPException) as raised:
+                update_settings(SettingsRequest(values=values | {"target_language": "klingon"}))
+            self.assertEqual(raised.exception.status_code, 400)
+            with self.assertRaises(HTTPException) as raised:
+                update_settings(SettingsRequest(values=values | {"default_subtitle_mode": "invalid"}))
             self.assertEqual(raised.exception.status_code, 400)
 
     def test_paths_cannot_escape_scan_root(self):
@@ -114,13 +130,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(calculate_moviehash(size, first, last), f"{expected:016x}")
 
     def test_output_name_falls_back_without_overwrite(self):
-        self.assertEqual(choose_output_path("Movies/Movie.mkv", lambda _: False), "Movies/Movie.srt")
+        self.assertEqual(choose_output_path("Movies/Movie.mkv", "es", lambda _: False), "Movies/Movie.srt")
         self.assertEqual(
-            choose_output_path("Movies/Movie.mkv", lambda path: path.endswith("Movie.srt")),
-            "Movies/Movie.zh-Hans.srt",
+            choose_output_path("Movies/Movie.mkv", "pt-br", lambda path: path.endswith("Movie.srt")),
+            "Movies/Movie.pt-BR.srt",
         )
         with self.assertRaises(PipelineError):
-            choose_output_path("Movies/Movie.mkv", lambda _: True)
+            choose_output_path("Movies/Movie.mkv", "es", lambda _: True)
 
     def test_cues_are_bounded_by_count_and_characters(self):
         cues = [
@@ -143,8 +159,9 @@ class CoreTests(unittest.TestCase):
                 }
             }
 
-        selected = OpenSubtitles._prefer([item("en", 1), item("zh-cn", 2)])
+        selected = OpenSubtitles._prefer([item("en", 1), item("es", 2)], ("es", "en"))
         self.assertEqual(selected.file_id, 2)
+        self.assertEqual(len(TARGET_LANGUAGES), 20)
 
     def test_opensubtitles_login_precedes_download(self):
         requests = []
@@ -228,7 +245,8 @@ class CoreTests(unittest.TestCase):
         video = "Movie.2026.mkv"
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.srt", "你好，世界".encode()), "zh-cn")
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.en.srt", b"Short"), "en")
-        self.assertIsNone(detect_sidecar_language(video, "Movie.2026.ja.srt", "日本語です".encode()))
+        self.assertEqual(detect_sidecar_language(video, "Movie.2026.ja.srt", "日本語です".encode()), "ja")
+        self.assertEqual(detect_sidecar_language(video, "Movie.2026.zh-Hant.srt", "繁體中文".encode()), "zh-tw")
 
 
 class WebDAVTests(unittest.TestCase):
@@ -301,8 +319,10 @@ class FakeWebDAV:
 class FakeOpenSubtitles:
     def __init__(self, language):
         self.language = language
+        self.languages = None
 
-    def find(self, *_):
+    def find(self, *args):
+        self.languages = args[-1]
         return SubtitleCandidate(file_id=1, language=self.language, release="Matched.Release", moviehash_match=True)
 
     def download(self, _):
@@ -325,12 +345,41 @@ class PipelineTests(unittest.TestCase):
                 raise AssertionError("Existing Chinese must skip OpenSubtitles")
 
         result = process_video(
-            "Movie.mkv", config(), webdav, ForbiddenOpenSubtitles(), lambda *_: None, syncer=copy_sync
+            "Movie.mkv",
+            config(),
+            webdav,
+            ForbiddenOpenSubtitles(),
+            lambda *_: None,
+            syncer=copy_sync,
+            subtitle_mode="target",
         )
         self.assertTrue(result["existing"])
         self.assertEqual(result["outputPath"], entry.path)
         self.assertEqual(webdav.hash_calls, 0)
         self.assertEqual(webdav.uploads, {})
+
+    def test_bilingual_ignores_existing_target_sidecar_and_uses_english(self):
+        webdav = FakeWebDAV()
+        entry = FileEntry("Movie.zh-Hans.srt", "Movie.zh-Hans.srt", "file", 20)
+        webdav.sidecar_entries = [entry]
+        webdav.sidecar_data[entry.path] = "1\n00:00:01,000 --> 00:00:02,000\n你好\n\n".encode()
+
+        def translator(source, destination, _, **options):
+            self.assertEqual(options["subtitle_mode"], "bilingual")
+            destination.write_text(source.read_text() + "\nTranslated", encoding="utf-8")
+            return {"promptTokens": 1, "completionTokens": 1, "totalTokens": 2}
+
+        result = process_video(
+            "Movie.mkv",
+            config(),
+            webdav,
+            FakeOpenSubtitles("en"),
+            lambda *_: None,
+            syncer=copy_sync,
+            translator=translator,
+        )
+        self.assertNotIn("existing", result)
+        self.assertIn(b"Translated", webdav.uploads["Movie.srt"])
 
     def test_existing_english_sidecar_is_translated_to_language_output(self):
         webdav = FakeWebDAV()
@@ -342,7 +391,7 @@ class PipelineTests(unittest.TestCase):
             def find(self, *_):
                 raise AssertionError("Existing English must skip OpenSubtitles")
 
-        def translator(source, destination, _):
+        def translator(source, destination, _, **__):
             destination.write_text(source.read_text() + "\nTranslated", encoding="utf-8")
             return {"promptTokens": 1, "completionTokens": 1, "totalTokens": 2}
 
@@ -361,6 +410,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_chinese_flow_skips_ai_and_uploads_srt(self):
         webdav = FakeWebDAV()
+        opensubtitles = FakeOpenSubtitles("zh-cn")
 
         def forbidden_ai(*_):
             raise AssertionError("Chinese subtitles must not call AI")
@@ -369,13 +419,15 @@ class PipelineTests(unittest.TestCase):
             "Movie.mkv",
             config(),
             webdav,
-            FakeOpenSubtitles("zh-cn"),
+            opensubtitles,
             lambda *_: None,
             syncer=copy_sync,
             translator=forbidden_ai,
+            subtitle_mode="target",
         )
         self.assertEqual(result["outputPath"], "Movie.srt")
         self.assertEqual(webdav.uploads["Movie.srt"], SRT)
+        self.assertEqual(opensubtitles.languages, ("zh-cn", "en"))
 
     def test_exact_moviehash_skips_sync_but_metadata_match_does_not(self):
         webdav = FakeWebDAV()
@@ -390,6 +442,7 @@ class PipelineTests(unittest.TestCase):
             FakeOpenSubtitles("zh-cn"),
             lambda *_: None,
             syncer=forbidden_sync,
+            subtitle_mode="target",
         )
 
         class MetadataMatch(FakeOpenSubtitles):
@@ -409,6 +462,7 @@ class PipelineTests(unittest.TestCase):
             MetadataMatch("zh-cn"),
             lambda *_: None,
             syncer=record_sync,
+            subtitle_mode="target",
         )
         self.assertEqual(len(sync_calls), 1)
 
@@ -423,27 +477,30 @@ class PipelineTests(unittest.TestCase):
             InvalidExact("zh-cn"),
             lambda *_: None,
             syncer=record_sync,
+            subtitle_mode="target",
         )
         self.assertEqual(len(sync_calls), 2)
 
     def test_english_flow_translates_before_upload(self):
         webdav = FakeWebDAV()
 
-        def translator(source, destination, _):
+        def translator(source, destination, _, **__):
             destination.write_text(source.read_text() + "\nTranslated", encoding="utf-8")
             return {"promptTokens": 10, "completionTokens": 5, "totalTokens": 15}
 
+        opensubtitles = FakeOpenSubtitles("en")
         result = process_video(
             "Movie.mkv",
             config(),
             webdav,
-            FakeOpenSubtitles("en"),
+            opensubtitles,
             lambda *_: None,
             syncer=copy_sync,
             translator=translator,
         )
         self.assertIn(b"Translated", webdav.uploads["Movie.srt"])
         self.assertEqual(result["aiUsage"]["totalTokens"], 15)
+        self.assertEqual(opensubtitles.languages, ("en",))
 
     def test_no_subtitle_stops_before_download_or_upload(self):
         webdav = FakeWebDAV()
@@ -477,7 +534,10 @@ class BatchJobTests(unittest.TestCase):
             JOBS.clear()
 
     def test_create_job_validates_paths_keeps_order_and_queues_more(self):
-        with patch("backend.app.require_services"), patch("backend.app.EXECUTOR.submit") as submit:
+        job_config = Config(**(config().__dict__ | {"target_language": "es"}))
+        with patch("backend.app.require_services", return_value=(job_config, object(), object())), patch(
+            "backend.app.EXECUTOR.submit"
+        ) as submit:
             for paths in ([], ["Movie.mkv", "./Movie.mkv"], ["../Movie.mkv"]):
                 with self.subTest(paths=paths), self.assertRaises(HTTPException) as raised:
                     create_job(JobRequest(paths=paths))
@@ -485,12 +545,18 @@ class BatchJobTests(unittest.TestCase):
 
             response = create_job(JobRequest(paths=["B.mkv", "A.mkv"]))
             self.assertEqual([item.path for item in JOBS[response["jobId"]].items], ["B.mkv", "A.mkv"])
-            queued = create_job(JobRequest(paths=["C.mkv"]))
+            queued = create_job(JobRequest(paths=["C.mkv"], mode="target"))
             self.assertEqual([item.path for item in JOBS[queued["jobId"]].items], ["C.mkv"])
+            self.assertEqual(JOBS[queued["jobId"]].target_language, "es")
+            self.assertEqual(JOBS[response["jobId"]].subtitle_mode, "bilingual")
+            self.assertEqual(JOBS[queued["jobId"]].subtitle_mode, "target")
             self.assertEqual(submit.call_count, 2)
             with self.assertRaises(HTTPException) as raised:
                 create_job(JobRequest(paths=["A.mkv"]))
             self.assertEqual(raised.exception.status_code, 409)
+            with self.assertRaises(HTTPException) as raised:
+                create_job(JobRequest(paths=["D.mkv"], mode="invalid"))
+            self.assertEqual(raised.exception.status_code, 400)
 
     def test_batch_continues_after_item_failure(self):
         JOBS["batch"] = Job(id="batch", items=[JobItem(path=path) for path in ("A.mkv", "B.mkv", "C.mkv")])
@@ -571,6 +637,25 @@ class TranslationTests(unittest.TestCase):
         self.assertIs(call["store"], False)
         self.assertNotIn("input", call)
         self.assertEqual(factory.call_args.kwargs["max_retries"], 2)
+
+    def test_target_only_replaces_english_and_names_target_language(self):
+        fake = FakeAI()
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "in.srt"
+            output = Path(directory) / "out.srt"
+            source.write_bytes(SRT)
+            translate_srt(
+                source,
+                output,
+                config(),
+                fake,
+                target_language="es",
+                subtitle_mode="target",
+            )
+            rendered = output.read_text()
+
+        self.assertNotIn("Hello there.", rendered)
+        self.assertIn("Spanish", fake.chat.completions.calls[0]["messages"][0]["content"])
 
     def test_invalid_translation_ids_fail_after_three_chat_calls(self):
         fake = FakeAI(invalid=True)

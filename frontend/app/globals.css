@@ -67,6 +67,17 @@ h1 { margin: 0; font-size: clamp(36px, 6vw, 62px); line-height: .95; letter-spac
 .start { display: flex; align-items: center; justify-content: space-between; gap: 28px; min-width: 210px; padding: 14px 17px; color: #fff; border: 0; border-radius: 11px; background: var(--green); cursor: pointer; font-weight: 800; box-shadow: 0 8px 20px rgba(23,107,77,.2); }
 .start:hover { background: var(--green-dark); }
 .start:disabled { cursor: not-allowed; opacity: .45; box-shadow: none; }
+.createSplit { display: flex; flex: 0 0 auto; }
+.createSplit .start { flex-direction: column; align-items: flex-start; gap: 2px; min-width: 230px; border-radius: 11px 0 0 11px; }
+.createSplit .start:only-child { border-radius: 11px; }
+.createSplit .start small { font-size: 10px; font-weight: 600; opacity: .8; }
+.modeMenu { position: relative; }
+.modeMenu summary { display: grid; place-items: center; width: 42px; height: 100%; min-height: 54px; color: #fff; border-left: 1px solid rgba(255,255,255,.28); border-radius: 0 11px 11px 0; background: var(--green); cursor: pointer; font-size: 18px; font-weight: 800; list-style: none; box-shadow: 0 8px 20px rgba(23,107,77,.2); }
+.modeMenu summary::-webkit-details-marker { display: none; }
+.modeMenu summary:hover, .modeMenu[open] summary { background: var(--green-dark); }
+.modeOptions { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30; display: grid; overflow: hidden; width: 230px; padding: 5px; border: 1px solid var(--line); border-radius: 11px; background: #fffdf8; box-shadow: 0 14px 36px rgba(37,43,39,.18); }
+.modeOptions button { display: grid; grid-template-columns: 18px 1fr; gap: 7px; padding: 10px; color: var(--ink); border: 0; border-radius: 7px; background: transparent; cursor: pointer; text-align: left; }
+.modeOptions button:hover, .modeOptions button[aria-current="true"] { background: #e6f0e9; }
 
 .queue { position: fixed; right: 20px; bottom: 130px; z-index: 20; overflow: hidden; width: min(340px, calc(100% - 40px)); border: 1px solid var(--line); border-radius: 14px; background: rgba(255,253,248,.97); box-shadow: 0 18px 50px rgba(37,43,39,.18); backdrop-filter: blur(10px); }
 .queueHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; }
@@ -124,6 +135,8 @@ footer { padding: 26px 0 0; color: #8a918e; text-align: center; font-size: 11px;
   .tableHead span:last-child, .row > span:last-child { display: none; }
   .actions { bottom: 12px; align-items: stretch; flex-direction: column; width: calc(100% - 24px); }
   .start { width: 100%; }
+  .createSplit { width: 100%; }
+  .createSplit .start { flex: 1; width: auto; }
   .queue { right: 12px; bottom: 190px; width: calc(100% - 24px); }
   .queueItems { max-height: 180px; }
   .settingsHeader { grid-template-columns: auto 1fr; margin-bottom: 30px; }

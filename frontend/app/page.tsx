@@ -34,12 +34,20 @@ type Job = {
   message: string;
   items: JobItem[];
   error?: string | null;
+  target_language?: string;
+  subtitle_mode?: string;
 };
 
 type Health = {
   ready: boolean;
   configuration: string;
   binaries: { ffmpeg: boolean; ffsubsync: boolean };
+};
+
+type Option = { value: string; label: string };
+type SettingsResponse = {
+  values: Record<string, string>;
+  options: { subtitle_modes: Option[] };
 };
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
@@ -71,6 +79,8 @@ export default function Home() {
   const [selected, setSelected] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [initialQuotaRemaining, setInitialQuotaRemaining] = useState<number | null>(null);
+  const [subtitleMode, setSubtitleMode] = useState("bilingual");
+  const [subtitleModes, setSubtitleModes] = useState<Option[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -107,6 +117,15 @@ export default function Home() {
         setLoading(false);
       });
 
+    api<SettingsResponse>("/api/settings")
+      .then(({ values, options }) => {
+        setSubtitleModes(options.subtitle_modes);
+        if (options.subtitle_modes.some(({ value }) => value === values.default_subtitle_mode)) {
+          setSubtitleMode(values.default_subtitle_mode);
+        }
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load subtitle settings"));
+
     const remembered = (sessionStorage.getItem("subtitle-maker-jobs")
       ?? sessionStorage.getItem("subtitle-maker-job")
       ?? "").split(",").filter(Boolean);
@@ -140,12 +159,13 @@ export default function Home() {
     try {
       const value = await api<{ jobId: string }>("/api/jobs", {
         method: "POST",
-        body: JSON.stringify({ paths }),
+        body: JSON.stringify({ paths, mode: subtitleMode }),
       });
       const queued = {
         id: value.jobId,
         status: "queued",
         message: "Waiting to start",
+        subtitle_mode: subtitleMode,
         items: paths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
       };
       setJobs((current) => {
@@ -171,6 +191,7 @@ export default function Home() {
     (remaining, item) => item.result?.quota.remaining ?? remaining,
     initialQuotaRemaining,
   );
+  const subtitleModeLabel = subtitleModes.find(({ value }) => value === subtitleMode)?.label ?? "English & target language";
 
   return (
     <main>
@@ -263,9 +284,30 @@ export default function Home() {
             <span className="label">Usage</span>
             <strong><span className="usageNumber">{totalTokens.toLocaleString()}</span> AI tokens · <span className="usageNumber">{quotaRemaining ?? "—"}</span> subtitles remain</strong>
           </div>
-          <button className="start" onClick={() => void start()} disabled={!selected.length || !health?.ready}>
-            {busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}<span aria-hidden="true">→</span>
-          </button>
+          <div className="createSplit">
+            <button className="start" onClick={() => void start()} disabled={!selected.length || !health?.ready || !subtitleModes.length}>
+              <span>{busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}</span>
+              <small>{subtitleModeLabel}</small>
+            </button>
+            {subtitleModes.length > 0 && <details className="modeMenu">
+              <summary aria-label="Choose subtitle mode" title="Choose subtitle mode">⌄</summary>
+              <div className="modeOptions">
+                {subtitleModes.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    aria-current={option.value === subtitleMode ? "true" : undefined}
+                    onClick={(event) => {
+                      setSubtitleMode(option.value);
+                      event.currentTarget.closest("details")?.removeAttribute("open");
+                    }}
+                  >
+                    <span aria-hidden="true">{option.value === subtitleMode ? "✓" : ""}</span>{option.label}
+                  </button>
+                ))}
+              </div>
+            </details>}
+          </div>
         </div>
       </section>
 

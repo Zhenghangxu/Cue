@@ -4,8 +4,25 @@ import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-type SettingField = { name: string; label: string; secret?: boolean; optional?: boolean; select?: boolean; type?: string };
+type Option = { value: string; label: string };
+type SettingsOptions = { target_languages: Option[]; subtitle_modes: Option[] };
+type SettingField = {
+  name: string;
+  label: string;
+  secret?: boolean;
+  optional?: boolean;
+  type?: string;
+  options?: Option[];
+  optionKey?: keyof SettingsOptions;
+};
 const SECTIONS: { title: string; fields: SettingField[] }[] = [
+  {
+    title: "Subtitles",
+    fields: [
+      { name: "target_language", label: "Target language", optionKey: "target_languages" },
+      { name: "default_subtitle_mode", label: "Default mode", optionKey: "subtitle_modes" },
+    ],
+  },
   {
     title: "WebDAV",
     fields: [
@@ -30,7 +47,11 @@ const SECTIONS: { title: string; fields: SettingField[] }[] = [
       { name: "openai_base_url", label: "Base URL", type: "url" },
       { name: "openai_api_key", label: "API key", secret: true },
       { name: "openai_model_id", label: "Model" },
-      { name: "openai_reasoning_effort", label: "Reasoning effort", select: true },
+      {
+        name: "openai_reasoning_effort",
+        label: "Reasoning effort",
+        options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })),
+      },
     ],
   },
 ];
@@ -38,12 +59,14 @@ const SECTIONS: { title: string; fields: SettingField[] }[] = [
 type SettingsResponse = {
   values: Record<string, string>;
   secrets: Record<string, boolean>;
+  options: SettingsOptions;
 };
 
 export default function Settings() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
   const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({});
+  const [options, setOptions] = useState<SettingsOptions>({ target_languages: [], subtitle_modes: [] });
   const [clearSecrets, setClearSecrets] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -58,6 +81,7 @@ export default function Settings() {
         const settings = body as SettingsResponse;
         setValues(settings.values);
         setStoredSecrets(settings.secrets);
+        setOptions(settings.options);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load settings"))
       .finally(() => setLoading(false));
@@ -116,15 +140,15 @@ export default function Settings() {
               {section.fields.map((field) => (
                 <div className="settingField" key={field.name}>
                   <label htmlFor={field.name}>{field.label}{field.optional && <small>Optional</small>}</label>
-                  {field.select ? (
+                  {field.options || field.optionKey ? (
                     <select
                       id={field.name}
-                      value={values[field.name] ?? "low"}
+                      value={values[field.name] ?? ""}
                       onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
                       disabled={loading || saving}
                     >
-                      {["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((effort) => (
-                        <option key={effort} value={effort}>{effort}</option>
+                      {(field.options ?? options[field.optionKey!]).map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
                   ) : (

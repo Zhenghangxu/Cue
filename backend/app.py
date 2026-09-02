@@ -37,6 +37,29 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Subtitle Maker"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 ENV_PATH = BASE_DIR / ".env"
+TARGET_LANGUAGES = {
+    "zh-cn": ("Simplified Chinese", "zh-Hans"),
+    "zh-tw": ("Traditional Chinese", "zh-Hant"),
+    "es": ("Spanish", "es"),
+    "fr": ("French", "fr"),
+    "de": ("German", "de"),
+    "ja": ("Japanese", "ja"),
+    "ko": ("Korean", "ko"),
+    "pt-br": ("Brazilian Portuguese", "pt-BR"),
+    "it": ("Italian", "it"),
+    "ru": ("Russian", "ru"),
+    "ar": ("Arabic", "ar"),
+    "hi": ("Hindi", "hi"),
+    "tr": ("Turkish", "tr"),
+    "pl": ("Polish", "pl"),
+    "nl": ("Dutch", "nl"),
+    "id": ("Indonesian", "id"),
+    "vi": ("Vietnamese", "vi"),
+    "th": ("Thai", "th"),
+    "uk": ("Ukrainian", "uk"),
+    "cs": ("Czech", "cs"),
+}
+SUBTITLE_MODES = {"target": "Target language only", "bilingual": "English & target language"}
 SETTING_DEFAULTS = {
     "webdav_username": "",
     "webdav_endpoint": "",
@@ -46,6 +69,8 @@ SETTING_DEFAULTS = {
     "openai_base_url": "https://api.openai.com/v1",
     "openai_model_id": "gpt-5.6-luna",
     "openai_reasoning_effort": "low",
+    "target_language": "zh-cn",
+    "default_subtitle_mode": "bilingual",
 }
 SECRET_SETTINGS = ("webdav_password", "opensubtitles_api_key", "opensubtitles_password", "openai_api_key")
 SECRET_ENV_NAMES = {key: key.upper() for key in SECRET_SETTINGS}
@@ -91,6 +116,8 @@ class Config:
     openai_api_key: str
     openai_model_id: str
     openai_reasoning_effort: str
+    target_language: str
+    default_subtitle_mode: str
     opensubtitles_username: str | None = None
     opensubtitles_password: str | None = None
 
@@ -108,6 +135,8 @@ class Config:
             "openai_base_url",
             "openai_model_id",
             "openai_reasoning_effort",
+            "target_language",
+            "default_subtitle_mode",
         )
         missing = [name for name in required if not values.get(name)]
         missing.extend(name for name in ("webdav_password", "opensubtitles_api_key", "openai_api_key") if not secrets.get(name))
@@ -124,6 +153,12 @@ class Config:
         effort = values["openai_reasoning_effort"].strip().lower()
         if effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
             raise PipelineError("OpenAI reasoning effort is invalid")
+        target_language = values["target_language"].strip().lower()
+        if target_language not in TARGET_LANGUAGES:
+            raise PipelineError("Target language is invalid")
+        subtitle_mode = values["default_subtitle_mode"].strip().lower()
+        if subtitle_mode not in SUBTITLE_MODES:
+            raise PipelineError("Default subtitle mode is invalid")
 
         return cls(
             webdav_username=values["webdav_username"],
@@ -136,6 +171,8 @@ class Config:
             openai_api_key=secrets["openai_api_key"],
             openai_model_id=values["openai_model_id"],
             openai_reasoning_effort=effort,
+            target_language=target_language,
+            default_subtitle_mode=subtitle_mode,
             opensubtitles_username=values.get("opensubtitles_username") or None,
             opensubtitles_password=secrets.get("opensubtitles_password") or None,
         )
@@ -171,6 +208,8 @@ class JobItem:
 class Job:
     id: str
     items: list[JobItem]
+    target_language: str = "zh-cn"
+    subtitle_mode: str = "bilingual"
     status: str = "queued"
     message: str = "Waiting to start"
     error: str | None = None
@@ -179,6 +218,7 @@ class Job:
 
 class JobRequest(BaseModel):
     paths: list[str]
+    mode: str | None = None
 
 
 class SettingsRequest(BaseModel):
@@ -210,32 +250,43 @@ def normalized_title(value: str) -> str:
     return re.sub(r"[^\w]+", "", value.casefold(), flags=re.UNICODE)
 
 
-def choose_output_path(video_path: str, exists: Callable[[str], bool]) -> str:
+def language_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
     video = PurePosixPath(normalize_relative(video_path))
     parent = "" if str(video.parent) == "." else str(video.parent)
-    candidates = [f"{video.stem}.srt", f"{video.stem}.zh-Hans.srt"]
-    for name in candidates:
-        candidate = f"{parent}/{name}" if parent else name
-        if not exists(candidate):
-            return candidate
-    raise PipelineError("Both the default and zh-Hans subtitle files already exist")
-
-
-def chinese_output_path(video_path: str, exists: Callable[[str], bool]) -> str:
-    video = PurePosixPath(normalize_relative(video_path))
-    parent = "" if str(video.parent) == "." else str(video.parent)
-    candidate = f"{video.stem}.zh-Hans.srt"
-    path = f"{parent}/{candidate}" if parent else candidate
+    name = f"{video.stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+    path = f"{parent}/{name}" if parent else name
     if exists(path):
-        raise PipelineError("The zh-Hans subtitle file already exists; nothing was overwritten")
+        raise PipelineError(f"The {TARGET_LANGUAGES[target_language][0]} subtitle file already exists")
     return path
+
+
+def choose_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
+    video = PurePosixPath(normalize_relative(video_path))
+    parent = "" if str(video.parent) == "." else str(video.parent)
+    names = [f"{video.stem}.srt", f"{video.stem}.{TARGET_LANGUAGES[target_language][1]}.srt"]
+    for name in names:
+        path = f"{parent}/{name}" if parent else name
+        if not exists(path):
+            return path
+    raise PipelineError(f"Both default and {TARGET_LANGUAGES[target_language][0]} subtitle files already exist")
 
 
 def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) -> str | None:
     video_stem = PurePosixPath(video_name).stem
     subtitle_stem = PurePosixPath(subtitle_name).stem
     extra = subtitle_stem[len(video_stem) :] if subtitle_stem.casefold().startswith(video_stem.casefold()) else ""
-    tokens = {token for token in re.split(r"[^a-z0-9]+", extra.casefold()) if token}
+    markers = "." + re.sub(r"[^a-z0-9]+", ".", extra.casefold()).strip(".") + "."
+    aliases = {
+        "zh-tw": ("zh-tw", "zh-hant", "cht", "traditional-chinese"),
+        "zh-cn": ("zh-cn", "zh-hans", "zh", "zho", "chi", "chs", "cn", "chinese", "simplified-chinese"),
+        "en": ("en", "eng", "english"),
+    }
+    for code, (name, tag) in TARGET_LANGUAGES.items():
+        aliases.setdefault(code, (code, tag, name))
+    for code, names in aliases.items():
+        if any(f".{re.sub(r'[^a-z0-9]+', '.', name.casefold()).strip('.')}." in markers for name in names):
+            return code
+
     encoding = chardet.detect(data).get("encoding") or "utf-8"
     text = data.decode(encoding, errors="ignore")
     han = len(re.findall(r"[\u3400-\u9fff]", text))
@@ -244,9 +295,7 @@ def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) ->
     latin = len(re.findall(r"[A-Za-z]", text))
     if han >= 3 and kana == 0 and hangul == 0:
         return "zh-cn"
-    if tokens & {"zh", "zho", "chi", "chs", "cht", "cn", "chinese", "zhcn", "zhhans", "zhhant"}:
-        return "zh-cn"
-    if tokens & {"en", "eng", "english"} or latin >= 10:
+    if latin >= 10:
         return "en"
     return None
 
@@ -583,7 +632,7 @@ class OpenSubtitles:
         attrs = item.get("attributes", {})
         language = str(attrs.get("language", "")).lower()
         files = attrs.get("files") or []
-        if language not in {"en", "zh-cn"} or attrs.get("nb_cd", 1) != 1 or not files:
+        if (language != "en" and language not in TARGET_LANGUAGES) or attrs.get("nb_cd", 1) != 1 or not files:
             return None
         try:
             file_id = int(files[0]["file_id"])
@@ -613,28 +662,29 @@ class OpenSubtitles:
         return bool(actual_title) and (expected_title == actual_title or expected_title in actual_title or actual_title in expected_title)
 
     @staticmethod
-    def _prefer(items: Iterable[dict[str, Any]]) -> SubtitleCandidate | None:
+    def _prefer(items: Iterable[dict[str, Any]], languages: tuple[str, ...]) -> SubtitleCandidate | None:
         candidates = [candidate for item in items if (candidate := OpenSubtitles._candidate(item))]
-        return next((item for item in candidates if item.language == "zh-cn"), None) or next(
-            (item for item in candidates if item.language == "en"), None
-        )
+        return next((candidate for language in languages for candidate in candidates if candidate.language == language), None)
 
-    def find(self, filename: str, moviehash: str) -> SubtitleCandidate:
+    def find(self, filename: str, moviehash: str, languages: tuple[str, ...]) -> SubtitleCandidate:
+        language_query = ",".join(languages)
         hash_results = self._search(
             {
-                "languages": "en,zh-cn",
+                "languages": language_query,
                 "moviehash": moviehash,
                 "moviehash_match": "only",
                 "query": filename.casefold(),
             }
         )
-        candidate = self._prefer(item for item in hash_results if item.get("attributes", {}).get("moviehash_match"))
+        candidate = self._prefer(
+            (item for item in hash_results if item.get("attributes", {}).get("moviehash_match")), languages
+        )
         if candidate:
             return candidate
 
         guessed = guessit(filename)
         params: dict[str, Any] = {
-            "languages": "en,zh-cn",
+            "languages": language_query,
             "query": str(guessed.get("title", "")).casefold(),
             "type": guessed.get("type", "movie"),
         }
@@ -643,9 +693,9 @@ class OpenSubtitles:
         if guessed.get("type") == "episode":
             params.update(season_number=guessed.get("season"), episode_number=guessed.get("episode"))
         fallback = self._search({key: value for key, value in params.items() if value is not None})
-        candidate = self._prefer(item for item in fallback if self._metadata_match(item, guessed))
+        candidate = self._prefer((item for item in fallback if self._metadata_match(item, guessed)), languages)
         if not candidate:
-            raise PipelineError("No reliable English or Simplified Chinese subtitle was found")
+            raise PipelineError("No reliable requested subtitle was found")
         return candidate
 
     def download(self, candidate: SubtitleCandidate) -> tuple[bytes, dict[str, Any]]:
@@ -703,11 +753,12 @@ class OpenSubtitles:
         return remaining
 
 
-TRANSLATION_INSTRUCTIONS = (
-    "Translate every supplied English subtitle cue into natural Simplified Chinese. "
-    "Keep names, meaning, formatting tags, and intentional line breaks. Be concise. "
-    "Return every id exactly once and output only the required JSON schema."
-)
+def translation_instructions(target_language: str) -> str:
+    return (
+        f"Translate every supplied English subtitle cue into natural {TARGET_LANGUAGES[target_language][0]}. "
+        "Keep names, meaning, formatting tags, and intentional line breaks. Be concise. "
+        "Return every id exactly once and output only the required JSON schema."
+    )
 
 
 def translation_schema() -> dict[str, Any]:
@@ -741,7 +792,12 @@ def translate_srt(
     output_path: Path,
     config: Config,
     client: Any | None = None,
+    *,
+    target_language: str | None = None,
+    subtitle_mode: str | None = None,
 ) -> dict[str, int]:
+    target_language = target_language or config.target_language
+    subtitle_mode = subtitle_mode or config.default_subtitle_mode
     subtitles = list(srt.parse(input_path.read_text(encoding="utf-8-sig")))
     indexed = list(enumerate(subtitles))
     if not indexed:
@@ -764,7 +820,7 @@ def translate_srt(
                 completion = client.chat.completions.create(
                     model=config.openai_model_id,
                     messages=[
-                        {"role": "developer", "content": TRANSLATION_INSTRUCTIONS},
+                        {"role": "developer", "content": translation_instructions(target_language)},
                         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
                     ],
                     reasoning_effort=config.openai_reasoning_effort,
@@ -803,7 +859,7 @@ def translate_srt(
     for cue_id, subtitle in indexed:
         translated = translations[cue_id]
         if translated:
-            subtitle.content = subtitle.content.rstrip() + "\n" + translated
+            subtitle.content = translated if subtitle_mode == "target" else subtitle.content.rstrip() + "\n" + translated
     output_path.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
     return usage
 
@@ -856,8 +912,13 @@ def process_video(
     opensubtitles: OpenSubtitles,
     progress: Callable[[str, str], None],
     syncer: Callable[[str, Path, Path, Config], None] = sync_subtitle,
-    translator: Callable[[Path, Path, Config], dict[str, int]] = translate_srt,
+    translator: Callable[..., dict[str, int]] = translate_srt,
+    target_language: str | None = None,
+    subtitle_mode: str | None = None,
 ) -> dict[str, Any]:
+    target_language = target_language or config.target_language
+    subtitle_mode = subtitle_mode or config.default_subtitle_mode
+    target_name = TARGET_LANGUAGES[target_language][0]
     relative = normalize_relative(relative)
     info = webdav.file_info(relative)
     progress("searching", "Checking existing sidecar subtitles")
@@ -865,10 +926,10 @@ def process_video(
     for entry in webdav.sidecars(relative):
         data = webdav.read_small(entry.path)
         language = detect_sidecar_language(info.name, entry.name, data)
-        if language == "zh-cn":
+        if subtitle_mode == "target" and language == target_language:
             return {
                 "outputPath": entry.path,
-                "sourceLanguage": "zh-cn",
+                "sourceLanguage": target_language,
                 "release": f"Existing sidecar: {entry.name}",
                 "moviehashMatch": False,
                 "quota": {"remaining": None, "resetTimeUtc": None},
@@ -880,17 +941,18 @@ def process_video(
 
     if english_sidecar:
         entry, subtitle_bytes = english_sidecar
-        output_path = chinese_output_path(relative, webdav.exists)
+        output_path = language_output_path(relative, target_language, webdav.exists)
         candidate = SubtitleCandidate(0, "en", f"Existing sidecar: {entry.name}", False)
         quota = {"remaining": None, "resetTimeUtc": None}
         source_suffix = PurePosixPath(entry.name).suffix.casefold()
         progress("downloading", "Using the existing English sidecar")
     else:
-        output_path = choose_output_path(relative, webdav.exists)
+        output_path = choose_output_path(relative, target_language, webdav.exists)
         progress("hashing", "Reading the first and last 64 KiB")
         moviehash = webdav.moviehash(relative, info.size or 0)
         progress("searching", "Finding an exact subtitle match")
-        candidate = opensubtitles.find(info.name, moviehash)
+        languages = ("en",) if subtitle_mode == "bilingual" else (target_language, "en")
+        candidate = opensubtitles.find(info.name, moviehash, languages)
         progress("downloading", f"Downloading {candidate.language} subtitle")
         subtitle_bytes, quota = opensubtitles.download(candidate)
         source_suffix = ".srt"
@@ -917,8 +979,14 @@ def process_video(
             syncer(relative, source, synced, config)
         usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
         if candidate.language == "en":
-            progress("translating", "Translating English cues to Simplified Chinese")
-            usage = translator(synced, final, config)
+            progress("translating", f"Translating English cues to {target_name}")
+            usage = translator(
+                synced,
+                final,
+                config,
+                target_language=target_language,
+                subtitle_mode=subtitle_mode,
+            )
         else:
             shutil.copyfile(synced, final)
 
@@ -981,6 +1049,8 @@ def run_job(job_id: str) -> None:
             job.status = "running"
             job.message = f"Starting 1 of {len(job.items)}"
             paths = [item.path for item in job.items]
+            target_language = job.target_language
+            subtitle_mode = job.subtitle_mode
 
         succeeded = 0
         for index, path in enumerate(paths):
@@ -992,7 +1062,11 @@ def run_job(job_id: str) -> None:
                     webdav,
                     opensubtitles,
                     lambda stage, message, index=index: update_job(job_id, index, stage, message),
-                    translator=lambda source, destination, config: translate_srt(source, destination, config, ai),
+                    translator=lambda source, destination, config, **options: translate_srt(
+                        source, destination, config, ai, **options
+                    ),
+                    target_language=target_language,
+                    subtitle_mode=subtitle_mode,
                 )
             except PipelineError as exc:
                 with JOBS_LOCK:
@@ -1011,9 +1085,7 @@ def run_job(job_id: str) -> None:
                 with JOBS_LOCK:
                     item = JOBS[job_id].items[index]
                     item.status = "completed"
-                    item.message = (
-                        "Existing Chinese subtitle found" if result.get("existing") else "Subtitle created successfully"
-                    )
+                    item.message = "Existing target subtitle found" if result.get("existing") else "Subtitle created successfully"
                     item.result = result
 
         with JOBS_LOCK:
@@ -1048,7 +1120,14 @@ def get_settings() -> dict[str, Any]:
     try:
         values = load_saved_settings()
         secrets = load_saved_secrets()
-        return {"values": values, "secrets": {key: key in secrets for key in SECRET_SETTINGS}}
+        return {
+            "values": values,
+            "secrets": {key: key in secrets for key in SECRET_SETTINGS},
+            "options": {
+                "target_languages": [{"value": code, "label": value[0]} for code, value in TARGET_LANGUAGES.items()],
+                "subtitle_modes": [{"value": code, "label": label} for code, label in SUBTITLE_MODES.items()],
+            },
+        }
     except PipelineError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -1139,7 +1218,7 @@ def quota() -> dict[str, int]:
 
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobRequest) -> dict[str, str]:
-    require_services()
+    config, _, _ = require_services()
     if not body.paths:
         raise HTTPException(status_code=400, detail="Select at least one video")
     try:
@@ -1150,6 +1229,9 @@ def create_job(body: JobRequest) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="Every selected video needs a path")
     if len(set(paths)) != len(paths):
         raise HTTPException(status_code=400, detail="A video can only appear once in a batch")
+    mode = (body.mode or config.default_subtitle_mode).strip().lower()
+    if mode not in SUBTITLE_MODES:
+        raise HTTPException(status_code=400, detail="Subtitle mode is invalid")
     with JOBS_LOCK:
         queued_paths = {
             item.path
@@ -1159,7 +1241,12 @@ def create_job(body: JobRequest) -> dict[str, str]:
         }
         if queued_paths.intersection(paths):
             raise HTTPException(status_code=409, detail="A selected video is already in the queue")
-        job = Job(id=str(uuid.uuid4()), items=[JobItem(path=path) for path in paths])
+        job = Job(
+            id=str(uuid.uuid4()),
+            items=[JobItem(path=path) for path in paths],
+            target_language=config.target_language,
+            subtitle_mode=mode,
+        )
         JOBS[job.id] = job
     EXECUTOR.submit(run_job, job.id)
     return {"jobId": job.id}
