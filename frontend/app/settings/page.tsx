@@ -3,6 +3,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { AppHeader } from "../AppHeader";
+import { NativeSelect } from "../NativeSelect";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 type Option = { value: string; label: string };
@@ -134,7 +135,7 @@ export default function Settings() {
                 <div className="settingField" key={field.name}>
                   <label htmlFor={field.name}>{field.label}{field.optional && <small>Optional</small>}</label>
                   {field.options || field.optionKey ? (
-                    <select
+                    <NativeSelect
                       id={field.name}
                       value={values[field.name] ?? ""}
                       onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
@@ -143,7 +144,7 @@ export default function Settings() {
                       {(field.options ?? options[field.optionKey!]).map((option) => (
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   ) : (
                     <input
                       id={field.name}

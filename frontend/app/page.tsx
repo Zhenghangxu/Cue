@@ -11,7 +11,6 @@ import {
   Folder,
   ListTodo,
   LoaderCircle,
-  Minus,
   RefreshCw,
   Search,
   Trash2,
@@ -96,6 +95,7 @@ function formatSize(bytes?: number | null) {
 
 export default function Home() {
   const renameDialog = useRef<HTMLDialogElement>(null);
+  const jobsDock = useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -188,6 +188,17 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [jobs, loadDirectory, path]);
 
+  useEffect(() => {
+    if (queueMinimized) return;
+
+    function dismissQueue(event: PointerEvent) {
+      if (!jobsDock.current?.contains(event.target as Node)) setQueueMinimized(true);
+    }
+
+    document.addEventListener("pointerdown", dismissQueue);
+    return () => document.removeEventListener("pointerdown", dismissQueue);
+  }, [queueMinimized]);
+
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
     return [
@@ -219,9 +230,9 @@ export default function Home() {
     });
   }
 
-  function clearCompletedJobs() {
+  function clearFinishedJobs() {
     setJobs((current) => {
-      const next = current.filter((job) => job.status !== "completed");
+      const next = current.filter((job) => !TERMINAL.has(job.status));
       sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
       return next;
     });
@@ -293,7 +304,7 @@ export default function Home() {
   return (
     <main>
       <AppHeader jobsControl={(
-        <div className="jobsDock">
+        <div className="jobsDock" ref={jobsDock}>
           <button
             className={`jobsButton${busy ? " busy" : ""}`}
             type="button"
@@ -319,21 +330,15 @@ export default function Home() {
                   <button
                     className="queueIconButton"
                     type="button"
-                    onClick={clearCompletedJobs}
-                    disabled={!jobs.some((job) => job.status === "completed")}
-                    aria-label="Clear completed jobs"
-                    title="Clear completed jobs"
+                    onClick={clearFinishedJobs}
+                    disabled={!jobs.some((job) => TERMINAL.has(job.status))}
+                    aria-label="Clear finished jobs from this list only"
+                    aria-describedby="clear-jobs-tooltip"
                   >
                     <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
-                  </button>
-                  <button
-                    className="queueIconButton"
-                    type="button"
-                    onClick={() => setQueueMinimized(true)}
-                    aria-label="Close job queue"
-                    title="Close job queue"
-                  >
-                    <Minus size={14} strokeWidth={1.75} aria-hidden="true" />
+                    <span className="queueTooltip" id="clear-jobs-tooltip" role="tooltip">
+                      Only clears this list
+                    </span>
                   </button>
                 </div>
               </div>
