@@ -3,6 +3,7 @@ import shutil
 import struct
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -719,9 +720,10 @@ class BatchJobTests(unittest.TestCase):
         webdav = RenameWebDAV()
         completions = RenameCompletions()
         ai = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        rename_config = replace(config(), openai_reasoning_effort="high")
         paths = ["Shows/obscure.01.1080p.mkv", "Shows/obscure.02.1080p.mkv"]
         with (
-            patch("backend.app.require_services", return_value=(config(), webdav, object())),
+            patch("backend.app.require_services", return_value=(rename_config, webdav, object())),
             patch("backend.app.OpenAI", return_value=ai),
             patch("backend.app.EXECUTOR.submit") as submit,
             patch("backend.app.update_job", wraps=update_job) as progress,
@@ -751,7 +753,7 @@ class BatchJobTests(unittest.TestCase):
             "Shameless.S00E01.1080p.AMZN.WEB.DL.mkv",
         )))
         self.assertEqual(completions.calls[0]["response_format"]["type"], "json_schema")
-        self.assertEqual(completions.calls[0]["reasoning_effort"], "medium")
+        self.assertEqual(completions.calls[0]["reasoning_effort"], "high")
         self.assertEqual(len(completions.calls), 2)
 
     def test_batch_continues_after_item_failure(self):

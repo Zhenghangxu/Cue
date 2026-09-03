@@ -881,7 +881,7 @@ def smart_rename(
                 },
                 {"role": "user", "content": json.dumps({"title": title, "files": payload}, ensure_ascii=False)},
             ],
-            reasoning_effort="medium",
+            reasoning_effort=config.openai_reasoning_effort,
             response_format={
                 "type": "json_schema",
                 "json_schema": {
