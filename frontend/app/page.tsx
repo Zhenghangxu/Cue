@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { filterAndSortEntries, type EntrySort } from "./fileEntries";
 
@@ -13,12 +13,14 @@ type FileEntry = {
 };
 
 type JobResult = {
-  outputPath: string;
-  sourceLanguage: string;
-  release: string;
-  moviehashMatch: boolean;
-  quota: { remaining?: number | null; resetTimeUtc?: string | null };
-  aiUsage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  outputPath?: string;
+  sourceLanguage?: string;
+  release?: string;
+  moviehashMatch?: boolean;
+  quota?: { remaining?: number | null; resetTimeUtc?: string | null };
+  aiUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  from?: string;
+  to?: string;
 };
 
 type JobItem = {
@@ -31,6 +33,7 @@ type JobItem = {
 
 type Job = {
   id: string;
+  kind?: "subtitles" | "rename";
   status: string;
   message: string;
   items: JobItem[];
@@ -74,6 +77,7 @@ function formatSize(bytes?: number | null) {
 }
 
 export default function Home() {
+  const renameDialog = useRef<HTMLDialogElement>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -82,9 +86,13 @@ export default function Home() {
   const [selected, setSelected] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [initialQuotaRemaining, setInitialQuotaRemaining] = useState<number | null>(null);
+  const [actionMode, setActionMode] = useState<"subtitles" | "rename">("subtitles");
   const [subtitleMode, setSubtitleMode] = useState("bilingual");
   const [subtitleModes, setSubtitleModes] = useState<Option[]>([]);
   const [loading, setLoading] = useState(true);
+  const [renaming, setRenaming] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameError, setRenameError] = useState("");
   const [error, setError] = useState("");
 
   const loadDirectory = useCallback(async (nextPath: string) => {
@@ -142,11 +150,16 @@ export default function Home() {
     if (!active.length) return;
     const timer = window.setTimeout(() => {
       Promise.all(active.map((job) => api<Job>(`/api/jobs/${job.id}`)))
-        .then((updated) => setJobs((current) => current.map((job) => updated.find(({ id }) => id === job.id) ?? job)))
+        .then((updated) => {
+          setJobs((current) => current.map((job) => updated.find(({ id }) => id === job.id) ?? job));
+          if (updated.some((job) => job.kind === "rename" && TERMINAL.has(job.status))) {
+            void loadDirectory(path);
+          }
+        })
         .catch((reason) => setError(String(reason)));
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [jobs]);
+  }, [jobs, loadDirectory, path]);
 
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
@@ -160,6 +173,9 @@ export default function Home() {
     () => filterAndSortEntries(entries, query, sort),
     [entries, query, sort],
   );
+  const selectedPaths = entries
+    .filter((entry) => entry.type === "video" && selected.includes(entry.path))
+    .map((entry) => entry.path);
 
   function changeSort(key: EntrySort["key"]) {
     setSort((current) => current.key === key
@@ -167,31 +183,60 @@ export default function Home() {
       : { key, direction: key === "name" ? "asc" : "desc" });
   }
 
+  function queueJob(job: Job) {
+    setJobs((current) => {
+      const next = [...current, job];
+      sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
+      sessionStorage.removeItem("subtitle-maker-job");
+      return next;
+    });
+  }
+
   async function start() {
-    const paths = entries.filter((entry) => entry.type === "video" && selected.includes(entry.path)).map((entry) => entry.path);
-    if (!paths.length) return;
+    if (!selectedPaths.length) return;
     setError("");
     try {
       const value = await api<{ jobId: string }>("/api/jobs", {
         method: "POST",
-        body: JSON.stringify({ paths, mode: subtitleMode }),
+        body: JSON.stringify({ paths: selectedPaths, mode: subtitleMode }),
       });
       const queued = {
         id: value.jobId,
         status: "queued",
         message: "Waiting to start",
         subtitle_mode: subtitleMode,
-        items: paths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
+        items: selectedPaths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
       };
-      setJobs((current) => {
-        const next = [...current, queued];
-        sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
-        sessionStorage.removeItem("subtitle-maker-job");
-        return next;
-      });
+      queueJob(queued);
       setSelected([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the job");
+    }
+  }
+
+  async function rename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPaths.length) return;
+    setRenaming(true);
+    setRenameError("");
+    try {
+      const value = await api<{ jobId: string }>("/api/rename", {
+        method: "POST",
+        body: JSON.stringify({ paths: selectedPaths, title: renameTitle }),
+      });
+      renameDialog.current?.close();
+      queueJob({
+        id: value.jobId,
+        kind: "rename",
+        status: "queued",
+        message: "Waiting to start",
+        items: selectedPaths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
+      });
+      setSelected([]);
+    } catch (reason) {
+      setRenameError(reason instanceof Error ? reason.message : "Could not rename the selected videos");
+    } finally {
+      setRenaming(false);
     }
   }
 
@@ -201,12 +246,14 @@ export default function Home() {
   const busy = pendingItems.length > 0;
   const completed = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
-  const totalTokens = items.reduce((total, item) => total + (item.result?.aiUsage.totalTokens ?? 0), 0);
+  const totalTokens = items.reduce((total, item) => total + (item.result?.aiUsage?.totalTokens ?? 0), 0);
   const quotaRemaining = items.reduce<number | null>(
-    (remaining, item) => item.result?.quota.remaining ?? remaining,
+    (remaining, item) => item.result?.quota?.remaining ?? remaining,
     initialQuotaRemaining,
   );
-  const subtitleModeLabel = subtitleModes.find(({ value }) => value === subtitleMode)?.label ?? "English & target language";
+  const actionModeLabel = actionMode === "rename"
+    ? "AI-powered VidHub naming"
+    : subtitleModes.find(({ value }) => value === subtitleMode)?.label ?? "English & target language";
 
   return (
     <main>
@@ -230,7 +277,7 @@ export default function Home() {
       )}
 
       {items.length > 0 && (
-        <aside className="queue" aria-live="polite" aria-label="Subtitle queue">
+        <aside className="queue" aria-live="polite" aria-label="Job queue">
           <div className="queueHeader">
             <div className="queueTitle">
               {busy && <span className="spinner" aria-hidden="true" />}
@@ -325,31 +372,95 @@ export default function Home() {
             <strong><span className="usageNumber">{totalTokens.toLocaleString()}</span> AI tokens · <span className="usageNumber">{quotaRemaining ?? "—"}</span> subtitles remain</strong>
           </div>
           <div className="createSplit">
-            <button className="start" onClick={() => void start()} disabled={!selected.length || !health?.ready || !subtitleModes.length}>
-              <span>{busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}</span>
-              <small>{subtitleModeLabel}</small>
+            <button
+              className="start"
+              onClick={() => {
+                if (actionMode === "rename") {
+                  setRenameTitle("");
+                  setRenameError("");
+                  renameDialog.current?.showModal();
+                } else void start();
+              }}
+              disabled={!selected.length || !health?.ready || renaming || (actionMode === "subtitles" && !subtitleModes.length)}
+            >
+              <span>{actionMode === "rename"
+                ? `Rename files (${selected.length})`
+                : busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}</span>
+              <small>{actionModeLabel}</small>
             </button>
             {subtitleModes.length > 0 && <details className="modeMenu">
-              <summary aria-label="Choose subtitle mode" title="Choose subtitle mode">⌄</summary>
+              <summary aria-label="More actions" title="More actions">⌄</summary>
               <div className="modeOptions">
                 {subtitleModes.map((option) => (
                   <button
                     type="button"
                     key={option.value}
-                    aria-current={option.value === subtitleMode ? "true" : undefined}
+                    aria-current={actionMode === "subtitles" && option.value === subtitleMode ? "true" : undefined}
                     onClick={(event) => {
+                      setActionMode("subtitles");
                       setSubtitleMode(option.value);
                       event.currentTarget.closest("details")?.removeAttribute("open");
                     }}
                   >
-                    <span aria-hidden="true">{option.value === subtitleMode ? "✓" : ""}</span>{option.label}
+                    <span aria-hidden="true">{actionMode === "subtitles" && option.value === subtitleMode ? "✓" : ""}</span>{option.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  aria-current={actionMode === "rename" ? "true" : undefined}
+                  onClick={(event) => {
+                    setActionMode("rename");
+                    event.currentTarget.closest("details")?.removeAttribute("open");
+                  }}
+                >
+                  <span aria-hidden="true">{actionMode === "rename" ? "✓" : ""}</span>Smart rename
+                </button>
               </div>
             </details>}
           </div>
         </div>
       </section>
+
+      <dialog
+        className="renameDialog"
+        ref={renameDialog}
+        aria-labelledby="rename-title"
+        onCancel={(event) => {
+          if (renaming) event.preventDefault();
+        }}
+        onClick={(event) => {
+          if (event.target === event.currentTarget && !renaming) event.currentTarget.close();
+        }}
+      >
+        <form onSubmit={rename}>
+          <div className="dialogHeader">
+            <div>
+              <p className="eyebrow">SMART RENAME</p>
+              <h2 id="rename-title">Name {selectedPaths.length} selected video{selectedPaths.length === 1 ? "" : "s"}</h2>
+            </div>
+            <button type="button" aria-label="Close smart rename" onClick={() => renameDialog.current?.close()} disabled={renaming}>×</button>
+          </div>
+          <label htmlFor="english-title">English title</label>
+          <input
+            id="english-title"
+            value={renameTitle}
+            onChange={(event) => setRenameTitle(event.target.value)}
+            placeholder="e.g. Game of Thrones"
+            maxLength={200}
+            autoFocus
+            required
+            disabled={renaming}
+          />
+          <p>The AI will keep episode, year, quality, and extension details when they are present.</p>
+          {renameError && <p className="dialogError" role="alert">{renameError}</p>}
+          <div className="dialogActions">
+            <button type="button" onClick={() => renameDialog.current?.close()} disabled={renaming}>Cancel</button>
+            <button className="start" type="submit" disabled={renaming || !renameTitle.trim()}>
+              {renaming ? "Renaming…" : "Rename files"}<span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </form>
+      </dialog>
 
       {error && <p className="error" role="alert">{error}</p>}
       <footer>Only files inside the configured WebDAV scan path are visible to this app.</footer>

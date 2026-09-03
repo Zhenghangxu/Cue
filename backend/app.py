@@ -212,6 +212,8 @@ class JobItem:
 class Job:
     id: str
     items: list[JobItem]
+    kind: str = "subtitles"
+    rename_title: str | None = None
     target_language: str = "zh-cn"
     subtitle_mode: str = "bilingual"
     status: str = "queued"
@@ -223,6 +225,11 @@ class Job:
 class JobRequest(BaseModel):
     paths: list[str]
     mode: str | None = None
+
+
+class RenameRequest(BaseModel):
+    paths: list[str]
+    title: str = Field(max_length=200)
 
 
 class SettingsRequest(BaseModel):
@@ -559,6 +566,17 @@ class WebDAV:
         if response.status_code not in {200, 201, 204}:
             raise PipelineError(f"WebDAV upload failed ({response.status_code})")
 
+    def move(self, source: str, destination: str) -> None:
+        response = self._request(
+            "MOVE",
+            self.url_for(source),
+            headers={"Destination": self.url_for(destination), "Overwrite": "F"},
+        )
+        if response.status_code == 412:
+            raise PipelineError("A file already exists with the suggested name")
+        if not response.is_success:
+            raise PipelineError(f"WebDAV rename failed ({response.status_code})")
+
 
 class OpenSubtitles:
     def __init__(self, config: Config, client: httpx.Client | None = None):
@@ -779,6 +797,109 @@ def translation_instructions(target_language: str) -> str:
         "Keep names, meaning, formatting tags, and intentional line breaks. Be concise. "
         "Return every id exactly once and output only the required JSON schema."
     )
+
+
+def smart_rename(
+    paths: list[str],
+    title: str,
+    config: Config,
+    webdav: WebDAV,
+    client: Any | None = None,
+) -> list[dict[str, str]]:
+    payload = [
+        {"id": index, "path": f"Media/{path}", "filename": PurePosixPath(path).name}
+        for index, path in enumerate(paths)
+    ]
+    client = client or OpenAI(
+        api_key=config.openai_api_key,
+        base_url=config.openai_base_url,
+        max_retries=2,
+        timeout=90,
+    )
+    try:
+        completion = client.chat.completions.create(
+            model=config.openai_model_id,
+            messages=[
+                {
+                    "role": "developer",
+                    "content": (
+                        "Rename video files for VidHub. Use the full media path as context, especially folder names "
+                        "that identify a season. Polish the supplied English title and start every filename with it. "
+                        "For TV, preserve or infer only clearly present season/episode identifiers and use "
+                        "Title.S01E01; use S00E01 for specials. For movies, use Title.Year when a year is present. "
+                        "Preserve useful release tags and the exact file extension. Never invent a year, season, or "
+                        "episode. Examples: The.Wandering.Earth.1080p.x264.mp4; "
+                        "Nirvana.in.Fire.S01E01.1080p.AMZN.WEB.DL.mkv; "
+                        "Shameless.S03E02.1080p.AMZN.WEB.DL.mkv; "
+                        "Shameless.S00E01.1080p.AMZN.WEB.DL.mkv. "
+                        "Return one safe basename per id, with no paths."
+                    ),
+                },
+                {"role": "user", "content": json.dumps({"title": title, "files": payload}, ensure_ascii=False)},
+            ],
+            reasoning_effort="medium",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "video_renames",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "renames": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"id": {"type": "integer"}, "name": {"type": "string"}},
+                                    "required": ["id", "name"],
+                                    "additionalProperties": False,
+                                },
+                            }
+                        },
+                        "required": ["renames"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            store=False,
+            max_completion_tokens=4_000,
+            n=1,
+            verbosity="low",
+        )
+    except Exception as exc:
+        raise PipelineError("AI rename request failed") from exc
+
+    try:
+        rows = json.loads(completion.choices[0].message.content or "")["renames"]
+        by_id = {row["id"]: row["name"].strip() for row in rows}
+        if len(rows) != len(paths) or set(by_id) != set(range(len(paths))):
+            raise ValueError
+        renames = []
+        for index, source_path in enumerate(paths):
+            source = PurePosixPath(source_path)
+            name = by_id[index]
+            if (
+                not name
+                or len(name) > 255
+                or name != PurePosixPath(name).name
+                or normalize_relative(name) != name
+                or PurePosixPath(name).suffix != source.suffix
+            ):
+                raise ValueError
+            renames.append({"from": source_path, "to": str(source.with_name(name))})
+        destinations = [item["to"] for item in renames]
+        if len(set(destinations)) != len(destinations):
+            raise ValueError
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise PipelineError("AI returned an invalid rename plan") from exc
+
+    changes = [item for item in renames if item["from"] != item["to"]]
+    for item in changes:
+        if webdav.exists(item["to"]):
+            raise PipelineError(f"A file already exists at {item['to']}")
+    for item in changes:
+        webdav.move(item["from"], item["to"])
+    return changes
 
 
 def translation_schema() -> dict[str, Any]:
@@ -1036,7 +1157,7 @@ except Exception as exc:
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
-EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="subtitle-job")
+EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="media-job")
 
 
 def require_services() -> tuple[Config, WebDAV, OpenSubtitles]:
@@ -1069,30 +1190,38 @@ def run_job(job_id: str) -> None:
             job.status = "running"
             job.message = f"Starting 1 of {len(job.items)}"
             paths = [item.path for item in job.items]
+            kind = job.kind
+            rename_title = job.rename_title
             target_language = job.target_language
             subtitle_mode = job.subtitle_mode
 
         succeeded = 0
         for index, path in enumerate(paths):
-            update_job(job_id, index, "running", "Starting")
             try:
-                result = process_video(
-                    path,
-                    config,
-                    webdav,
-                    opensubtitles,
-                    lambda stage, message, index=index: update_job(job_id, index, stage, message),
-                    translator=lambda source, destination, config, **options: translate_srt(
-                        source, destination, config, ai, **options
-                    ),
-                    target_language=target_language,
-                    subtitle_mode=subtitle_mode,
-                )
+                if kind == "rename":
+                    update_job(job_id, index, "renaming", "Choosing a VidHub filename")
+                    webdav.file_info(path)
+                    changes = smart_rename([path], rename_title or "", config, webdav, ai)
+                    result = changes[0] if changes else {"from": path, "to": path}
+                else:
+                    update_job(job_id, index, "running", "Starting")
+                    result = process_video(
+                        path,
+                        config,
+                        webdav,
+                        opensubtitles,
+                        lambda stage, message, index=index: update_job(job_id, index, stage, message),
+                        translator=lambda source, destination, config, **options: translate_srt(
+                            source, destination, config, ai, **options
+                        ),
+                        target_language=target_language,
+                        subtitle_mode=subtitle_mode,
+                    )
             except PipelineError as exc:
                 with JOBS_LOCK:
                     item = JOBS[job_id].items[index]
                     item.status = "failed"
-                    item.message = "Could not finish"
+                    item.message = "Could not rename" if kind == "rename" else "Could not finish"
                     item.error = str(exc)
             except Exception:
                 LOGGER.exception("job_item_crashed job_id=%s path=%r", job_id, path)
@@ -1106,18 +1235,25 @@ def run_job(job_id: str) -> None:
                 with JOBS_LOCK:
                     item = JOBS[job_id].items[index]
                     item.status = "completed"
-                    item.message = "Existing target subtitle found" if result.get("existing") else "Subtitle created successfully"
+                    if kind == "rename":
+                        item.message = (
+                            f"Renamed to {PurePosixPath(result['to']).name}"
+                            if result["from"] != result["to"]
+                            else "Name already matched"
+                        )
+                    else:
+                        item.message = "Existing target subtitle found" if result.get("existing") else "Subtitle created successfully"
                     item.result = result
 
         with JOBS_LOCK:
             job = JOBS[job_id]
             failed = len(job.items) - succeeded
             job.status = "completed" if succeeded else "failed"
-            job.message = f"{succeeded} of {len(job.items)} videos completed"
+            job.message = f"{succeeded} of {len(job.items)} {'files renamed' if kind == 'rename' else 'videos completed'}"
             if failed:
                 job.message += f"; {failed} failed"
             if not succeeded:
-                job.error = "Every video in the batch failed"
+                job.error = f"Every {'rename' if kind == 'rename' else 'video'} in the batch failed"
     except Exception:
         LOGGER.exception("job_crashed job_id=%s", job_id)
         with JOBS_LOCK:
@@ -1307,6 +1443,42 @@ def quota() -> dict[str, int]:
         return {"remaining": opensubtitles.remaining_downloads()}
     except PipelineError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/rename", status_code=202)
+def rename_files(body: RenameRequest) -> dict[str, str]:
+    require_services()
+    title = body.title.strip()
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="Select at least one video")
+    if not title:
+        raise HTTPException(status_code=400, detail="Enter the English title")
+    try:
+        paths = [normalize_relative(path) for path in body.paths]
+    except PipelineError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if any(not path or PurePosixPath(path).suffix.lower() not in VIDEO_EXTENSIONS for path in paths):
+        raise HTTPException(status_code=400, detail="Every selected path must be a supported video")
+    if len(set(paths)) != len(paths):
+        raise HTTPException(status_code=400, detail="A video can only appear once in a batch")
+    with JOBS_LOCK:
+        queued_paths = {
+            item.path
+            for job in JOBS.values()
+            if job.status not in TERMINAL_STAGES
+            for item in job.items
+        }
+        if queued_paths.intersection(paths):
+            raise HTTPException(status_code=409, detail="A selected video is already in the queue")
+        job = Job(
+            id=str(uuid.uuid4()),
+            items=[JobItem(path=path) for path in paths],
+            kind="rename",
+            rename_title=title,
+        )
+        JOBS[job.id] = job
+    EXECUTOR.submit(run_job, job.id)
+    return {"jobId": job.id}
 
 
 @app.post("/api/jobs", status_code=202)

@@ -21,6 +21,7 @@ from backend.app import (
     JobRequest,
     OpenSubtitles,
     PipelineError,
+    RenameRequest,
     SettingsRequest,
     SubtitleCandidate,
     TARGET_LANGUAGES,
@@ -33,9 +34,11 @@ from backend.app import (
     process_video,
     create_job,
     get_settings,
+    rename_files,
     run_job,
     sync_subtitle,
     translate_srt,
+    update_job,
     update_settings,
     app,
 )
@@ -351,6 +354,24 @@ class WebDAVTests(unittest.TestCase):
         media = httpx.Client(transport=httpx.MockTransport(cdn))
         self.assertEqual(WebDAV(config(), initial, media).read_range("Movie.mkv", 0, 9), b"0123456789")
 
+    def test_move_disables_overwrite(self):
+        requests = []
+
+        def handler(request: httpx.Request):
+            requests.append(request)
+            return httpx.Response(200)
+
+        WebDAV(config(), httpx.Client(transport=httpx.MockTransport(handler))).move(
+            "old name.mkv", "Game.of.Thrones.S01E01.mkv"
+        )
+
+        self.assertEqual(requests[0].method, "MOVE")
+        self.assertEqual(requests[0].headers["overwrite"], "F")
+        self.assertEqual(
+            requests[0].headers["destination"],
+            "https://example.test/dav/Media%20Library/Game.of.Thrones.S01E01.mkv",
+        )
+
 
 class FakeWebDAV:
     def __init__(self):
@@ -643,6 +664,71 @@ class BatchJobTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 create_job(JobRequest(paths=["D.mkv"], mode="invalid"))
             self.assertEqual(raised.exception.status_code, 400)
+
+    def test_smart_rename_uses_title_and_moves_selected_files(self):
+        class RenameWebDAV:
+            def __init__(self):
+                self.moves = []
+
+            def file_info(self, path):
+                return FileEntry(Path(path).name, path, "video", 100)
+
+            def exists(self, _):
+                return False
+
+            def move(self, source, destination):
+                self.moves.append((source, destination))
+
+        class RenameCompletions:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                filename = json.loads(kwargs["messages"][1]["content"])["files"][0]["filename"]
+                episode = "01" if ".01." in filename else "02"
+                content = json.dumps({"renames": [
+                    {"id": 0, "name": f"Game.of.Thrones.S01E{episode}.1080p.mkv"},
+                ]})
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+        webdav = RenameWebDAV()
+        completions = RenameCompletions()
+        ai = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        paths = ["Shows/obscure.01.1080p.mkv", "Shows/obscure.02.1080p.mkv"]
+        with (
+            patch("backend.app.require_services", return_value=(config(), webdav, object())),
+            patch("backend.app.OpenAI", return_value=ai),
+            patch("backend.app.EXECUTOR.submit") as submit,
+            patch("backend.app.update_job", wraps=update_job) as progress,
+        ):
+            result = rename_files(RenameRequest(paths=paths, title="  game of throne  "))
+            job = JOBS[result["jobId"]]
+            self.assertEqual(job.kind, "rename")
+            self.assertEqual(job.rename_title, "game of throne")
+            submit.assert_called_once_with(run_job, job.id)
+            run_job(job.id)
+
+        self.assertEqual(webdav.moves, [
+            (paths[0], "Shows/Game.of.Thrones.S01E01.1080p.mkv"),
+            (paths[1], "Shows/Game.of.Thrones.S01E02.1080p.mkv"),
+        ])
+        self.assertEqual([item.status for item in job.items], ["completed", "completed"])
+        self.assertEqual([call.args[2] for call in progress.call_args_list], ["renaming", "renaming"])
+        self.assertIn("2 of 2 files renamed", job.message)
+        request = json.loads(completions.calls[0]["messages"][1]["content"])
+        self.assertEqual(request["title"], "game of throne")
+        self.assertEqual(request["files"][0]["path"], f"Media/{paths[0]}")
+        prompt = completions.calls[0]["messages"][0]["content"]
+        self.assertTrue(all(example in prompt for example in (
+            "The.Wandering.Earth.1080p.x264.mp4",
+            "Nirvana.in.Fire.S01E01.1080p.AMZN.WEB.DL.mkv",
+            "Shameless.S03E02.1080p.AMZN.WEB.DL.mkv",
+            "Shameless.S00E01.1080p.AMZN.WEB.DL.mkv",
+        )))
+        self.assertEqual(completions.calls[0]["response_format"]["type"], "json_schema")
+        self.assertEqual(completions.calls[0]["reasoning_effort"], "medium")
+        self.assertEqual(len(completions.calls), 2)
 
     def test_batch_continues_after_item_failure(self):
         JOBS["batch"] = Job(id="batch", items=[JobItem(path=path) for path in ("A.mkv", "B.mkv", "C.mkv")])
