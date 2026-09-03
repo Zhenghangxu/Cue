@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
+import { ArrowRight } from "lucide-react";
+import { AppHeader } from "../AppHeader";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 type Option = { value: string; label: string };
@@ -118,15 +119,7 @@ export default function Settings() {
 
   return (
     <main className="settingsPage">
-      <header className="settingsHeader">
-        <div className="mark" aria-hidden="true">字</div>
-        <div>
-          <p className="eyebrow">SUBTITLE MAKER</p>
-          <h1>Settings</h1>
-          <p className="lede">Secrets are saved locally in the project&apos;s .env file.</p>
-        </div>
-        <Link className="settingsLink" href="/">← Media</Link>
-      </header>
+      <AppHeader page="settings" />
 
       <form className="settingsCard" onSubmit={save}>
         <div className="settingsIntro">
@@ -191,7 +184,7 @@ export default function Settings() {
             {error && <span className="settingsError" role="alert">{error}</span>}
           </div>
           <button className="start" type="submit" disabled={loading || saving}>
-            {saving ? "Saving…" : "Save settings"}<span aria-hidden="true">→</span>
+            {saving ? "Saving…" : "Save settings"}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
       </form>
