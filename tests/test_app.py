@@ -333,6 +333,30 @@ class WebDAVTests(unittest.TestCase):
         entries = WebDAV(config(), client).list("")
         self.assertEqual([(entry.type, entry.path) for entry in entries], [("directory", "Shows"), ("video", "Movie.mkv")])
 
+    def test_directory_listing_cache_refresh_and_rename_invalidation(self):
+        xml = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:">
+          <d:response><d:href>/dav/Media%20Library/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
+          <d:response><d:href>/dav/Media%20Library/Movie.mkv</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>123</d:getcontentlength></d:prop></d:propstat></d:response>
+        </d:multistatus>"""
+        requests = []
+
+        def handler(request: httpx.Request):
+            requests.append(request.method)
+            return httpx.Response(207, content=xml) if request.method == "PROPFIND" else httpx.Response(200)
+
+        webdav = WebDAV(config(), httpx.Client(transport=httpx.MockTransport(handler)))
+        self.assertEqual(webdav.list("")[0].path, "Movie.mkv")
+        self.assertEqual(webdav.list("")[0].path, "Movie.mkv")
+        self.assertEqual(requests.count("PROPFIND"), 1)
+
+        webdav.list("", refresh=True)
+        self.assertEqual(requests.count("PROPFIND"), 2)
+
+        webdav.move("Movie.mkv", "Renamed.mkv")
+        webdav.list("")
+        self.assertEqual(requests.count("PROPFIND"), 3)
+
     def test_range_request_requires_206(self):
         client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b"ignored")))
         with self.assertRaisesRegex(PipelineError, "does not support"):

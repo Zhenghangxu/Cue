@@ -1,7 +1,6 @@
 "use client";
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import {
   ArrowDown,
   ArrowRight,
@@ -9,11 +8,11 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  CircleUserRound,
   Folder,
   ListTodo,
   LoaderCircle,
   Minus,
+  RefreshCw,
   Search,
   Trash2,
   X,
@@ -70,9 +69,11 @@ type SettingsResponse = {
   values: Record<string, string>;
   options: { subtitle_modes: Option[] };
 };
+type DirectoryLoadOptions = { refresh?: boolean; resetView?: boolean };
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TERMINAL = new Set(["completed", "failed"]);
+const FILE_LIST_SKELETON_ROWS = 10;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -108,26 +109,34 @@ export default function Home() {
   const [subtitleMode, setSubtitleMode] = useState("bilingual");
   const [subtitleModes, setSubtitleModes] = useState<Option[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const [renameError, setRenameError] = useState("");
   const [error, setError] = useState("");
 
-  const loadDirectory = useCallback(async (nextPath: string) => {
-    setLoading(true);
+  const loadDirectory = useCallback(async (
+    nextPath: string,
+    { refresh = false, resetView = true }: DirectoryLoadOptions = {},
+  ) => {
+    if (refresh) setRefreshing(true);
+    else setLoading(true);
     setError("");
-    setSelected([]);
-    setQuery("");
+    if (resetView) {
+      setSelected([]);
+      setQuery("");
+    }
     try {
       const data = await api<{ path: string; entries: FileEntry[] }>(
-        `/api/files?path=${encodeURIComponent(nextPath)}`,
+        `/api/files?path=${encodeURIComponent(nextPath)}${refresh ? "&refresh=true" : ""}`,
       );
       setPath(data.path);
       setEntries(data.entries);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not load this directory");
     } finally {
-      setLoading(false);
+      if (refresh) setRefreshing(false);
+      else setLoading(false);
     }
   }, []);
 
@@ -171,7 +180,7 @@ export default function Home() {
         .then((updated) => {
           setJobs((current) => current.map((job) => updated.find(({ id }) => id === job.id) ?? job));
           if (updated.some((job) => job.kind === "rename" && TERMINAL.has(job.status))) {
-            void loadDirectory(path);
+            void loadDirectory(path, { refresh: true, resetView: false });
           }
         })
         .catch((reason) => setError(String(reason)));
@@ -343,6 +352,17 @@ export default function Home() {
             </aside>
           )}
         </div>
+      )} refreshControl={(
+        <button
+          className="refreshButton"
+          type="button"
+          onClick={() => void loadDirectory(path, { refresh: true, resetView: false })}
+          disabled={loading || refreshing || !health?.ready}
+          aria-label={refreshing ? "Refreshing media" : "Refresh media"}
+          title={refreshing ? "Refreshing media" : "Refresh media"}
+        >
+          <RefreshCw className={refreshing ? "spinner" : undefined} size={16} strokeWidth={1.75} aria-hidden="true" />
+        </button>
       )} />
 
       {health && !health.ready && (
@@ -410,9 +430,17 @@ export default function Home() {
             </button>
           </div>
           {loading && (
-            <div className="empty loadingState" role="status">
-              <LoaderCircle className="spinner" size={18} strokeWidth={1.75} aria-hidden="true" />
-              <span>Loading this directory…</span>
+            <div className="loadingRows" role="status" aria-label="Loading this directory">
+              {Array.from({ length: FILE_LIST_SKELETON_ROWS }, (_, index) => (
+                <div className="row loadingRow" key={index} aria-hidden="true">
+                  <span className="name">
+                    <span className="skeleton skeletonIcon" />
+                    <span className="skeleton skeletonName" />
+                  </span>
+                  <span className="skeleton skeletonSize" />
+                  <span className="skeleton skeletonDate" />
+                </div>
+              ))}
             </div>
           )}
           {!loading && entries.length === 0 && <div className="empty">No supported videos or folders here.</div>}
@@ -548,9 +576,6 @@ export default function Home() {
 
       {error && <p className="error" role="alert">{error}</p>}
       <footer>Only files inside the configured WebDAV scan path are visible to this app.</footer>
-      <Link className="avatarButton" href="/settings/" aria-label="Open settings" title="Open settings">
-        <CircleUserRound size={20} strokeWidth={1.75} aria-hidden="true" />
-      </Link>
     </main>
   );
 }

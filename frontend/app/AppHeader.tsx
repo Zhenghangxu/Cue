@@ -6,9 +6,11 @@ import { ThemeToggle } from "./ThemeToggle";
 export function AppHeader({
   page = "home",
   jobsControl,
+  refreshControl,
 }: {
   page?: "home" | "settings";
   jobsControl?: ReactNode;
+  refreshControl?: ReactNode;
 }) {
   const settingsPage = page === "settings";
 
@@ -28,6 +30,7 @@ export function AppHeader({
       <div className="headerActions">
         <ThemeToggle />
         {jobsControl}
+        {refreshControl}
         <Link className="settingsLink" href={settingsPage ? "/" : "/settings/"}>
           {settingsPage
             ? <ArrowLeft size={16} strokeWidth={1.75} />

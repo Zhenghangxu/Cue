@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
@@ -82,6 +83,8 @@ SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".vtt"}
 HASH_BLOCK_SIZE = 64 * 1024
 MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 TERMINAL_STAGES = {"completed", "failed"}
+DIRECTORY_CACHE_TTL_SECONDS = 5 * 60
+DIRECTORY_CACHE_MAX_ENTRIES = 128
 DAV = "{DAV:}"
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -353,6 +356,9 @@ class WebDAV:
             timeout=httpx.Timeout(30, connect=10),
             follow_redirects=False,
         )
+        self._directory_cache: OrderedDict[str, tuple[float, tuple[FileEntry, ...]]] = OrderedDict()
+        self._directory_cache_lock = threading.Lock()
+        self._directory_requests: dict[str, threading.Event] = {}
 
     def url_for(self, relative: str, directory: bool = False) -> str:
         relative = normalize_relative(relative)
@@ -437,11 +443,48 @@ class WebDAV:
             raise PipelineError("WebDAV directory response is too large")
         return self._parse_entries(response.content)
 
-    def list(self, relative: str) -> list[FileEntry]:
+    def list(self, relative: str, refresh: bool = False) -> list[FileEntry]:
         relative = normalize_relative(relative)
-        entries = [entry for entry in self._propfind(relative, 1, directory=True) if entry.path != relative]
-        entries = [entry for entry in entries if entry.type in {"directory", "video"}]
-        return sorted(entries, key=lambda entry: (entry.type != "directory", entry.name.casefold()))
+        force_refresh = refresh
+        while True:
+            with self._directory_cache_lock:
+                cached = self._directory_cache.get(relative)
+                if cached and not force_refresh and time.monotonic() - cached[0] < DIRECTORY_CACHE_TTL_SECONDS:
+                    self._directory_cache.move_to_end(relative)
+                    return list(cached[1])
+                pending = self._directory_requests.get(relative)
+                if pending is None:
+                    pending = threading.Event()
+                    self._directory_requests[relative] = pending
+                    break
+            pending.wait()
+            force_refresh = False
+
+        try:
+            entries = [entry for entry in self._propfind(relative, 1, directory=True) if entry.path != relative]
+            entries = [entry for entry in entries if entry.type in {"directory", "video"}]
+            entries = sorted(entries, key=lambda entry: (entry.type != "directory", entry.name.casefold()))
+            with self._directory_cache_lock:
+                self._directory_cache[relative] = (time.monotonic(), tuple(entries))
+                self._directory_cache.move_to_end(relative)
+                while len(self._directory_cache) > DIRECTORY_CACHE_MAX_ENTRIES:
+                    self._directory_cache.popitem(last=False)
+            return entries
+        finally:
+            with self._directory_cache_lock:
+                pending = self._directory_requests.pop(relative, None)
+            if pending:
+                pending.set()
+
+    def invalidate_directory_cache(self, paths: Iterable[str] | None = None) -> None:
+        with self._directory_cache_lock:
+            if paths is None:
+                self._directory_cache.clear()
+                return
+            for path in paths:
+                relative = PurePosixPath(normalize_relative(path))
+                parent = "" if str(relative.parent) == "." else str(relative.parent)
+                self._directory_cache.pop(parent, None)
 
     def sidecars(self, video_path: str) -> list[FileEntry]:
         video = PurePosixPath(normalize_relative(video_path))
@@ -576,6 +619,7 @@ class WebDAV:
             raise PipelineError("A file already exists with the suggested name")
         if not response.is_success:
             raise PipelineError(f"WebDAV rename failed ({response.status_code})")
+        self.invalidate_directory_cache((source, destination))
 
 
 class OpenSubtitles:
@@ -1427,11 +1471,11 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/api/files")
-def files(path: str = Query(default="")) -> dict[str, Any]:
+def files(path: str = Query(default=""), refresh: bool = Query(default=False)) -> dict[str, Any]:
     _, webdav, _ = require_services()
     try:
         relative = normalize_relative(path)
-        return {"path": relative, "entries": [asdict(entry) for entry in webdav.list(relative)]}
+        return {"path": relative, "entries": [asdict(entry) for entry in webdav.list(relative, refresh=refresh)]}
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
