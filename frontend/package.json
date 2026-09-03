@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
+    "test": "node --experimental-strip-types --test app/fileEntries.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -22,4 +23,3 @@
     "typescript": "^5.9.0"
   }
 }
-

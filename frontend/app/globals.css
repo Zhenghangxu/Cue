@@ -48,9 +48,14 @@ h1 { margin: 0; font-size: clamp(36px, 6vw, 62px); line-height: .95; letter-spac
 .breadcrumbs button { min-width: 0; overflow: hidden; padding: 4px 0; border: 0; background: transparent; color: var(--green); cursor: pointer; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .breadcrumbs button:disabled { cursor: default; opacity: .55; }
 
+.tableTools { display: flex; justify-content: flex-end; padding: 12px 22px; border-bottom: 1px solid var(--line); }
+.tableTools input { width: min(320px, 100%); padding: 9px 12px; color: var(--ink); border: 1px solid var(--line); border-radius: 9px; outline: none; background: #fbfaf5; }
+.tableTools input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(23,107,77,.12); }
 .table { min-height: 280px; }
 .tableHead, .row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 140px; align-items: center; gap: 20px; min-height: 58px; padding: 0 22px; }
 .tableHead { min-height: 42px; color: #8a918e; border-bottom: 1px solid var(--line); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.tableHead button { width: max-content; padding: 0; color: inherit; border: 0; background: transparent; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.tableHead button:hover { color: var(--green); }
 .row { width: 100%; text-align: left; border: 0; border-bottom: 1px solid #ebe8e0; background: transparent; color: var(--muted); font-size: 13px; transition: background .15s ease, color .15s ease; }
 .row:last-child { border-bottom: 0; }
 .row.folder { cursor: pointer; }
@@ -131,8 +136,9 @@ footer { padding: 26px 0 0; color: #8a918e; text-align: center; font-size: 11px;
   main { width: min(100% - 24px, 1120px); padding: 32px 0 210px; }
   .hero { grid-template-columns: auto 1fr; margin-bottom: 30px; }
   .hero .settingsLink { grid-column: 1 / -1; width: max-content; }
+  .tableTools input { width: 100%; }
   .tableHead, .row { grid-template-columns: minmax(0, 1fr) 80px; }
-  .tableHead span:last-child, .row > span:last-child { display: none; }
+  .tableHead > :last-child, .row > span:last-child { display: none; }
   .actions { bottom: 12px; align-items: stretch; flex-direction: column; width: calc(100% - 24px); }
   .start { width: 100%; }
   .createSplit { width: 100%; }

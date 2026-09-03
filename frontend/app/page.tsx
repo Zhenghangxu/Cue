@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { filterAndSortEntries, type EntrySort } from "./fileEntries";
 
 type FileEntry = {
   name: string;
@@ -76,6 +77,8 @@ export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<EntrySort>({ key: "modified", direction: "desc" });
   const [selected, setSelected] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [initialQuotaRemaining, setInitialQuotaRemaining] = useState<number | null>(null);
@@ -88,6 +91,7 @@ export default function Home() {
     setLoading(true);
     setError("");
     setSelected([]);
+    setQuery("");
     try {
       const data = await api<{ path: string; entries: FileEntry[] }>(
         `/api/files?path=${encodeURIComponent(nextPath)}`,
@@ -151,6 +155,17 @@ export default function Home() {
       ...parts.map((name, index) => ({ name, path: parts.slice(0, index + 1).join("/") })),
     ];
   }, [path]);
+
+  const visibleEntries = useMemo(
+    () => filterAndSortEntries(entries, query, sort),
+    [entries, query, sort],
+  );
+
+  function changeSort(key: EntrySort["key"]) {
+    setSort((current) => current.key === key
+      ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+      : { key, direction: key === "name" ? "asc" : "desc" });
+  }
 
   async function start() {
     const paths = entries.filter((entry) => entry.type === "video" && selected.includes(entry.path)).map((entry) => entry.path);
@@ -249,15 +264,40 @@ export default function Home() {
           ))}
         </nav>
 
+        <div className="tableTools">
+          <input
+            type="search"
+            aria-label="Search this folder"
+            placeholder="Search this folder"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+
         <div className="table" aria-label="Videos">
           <div className="tableHead">
-            <span>Name</span><span>Size</span><span>Modified</span>
+            <button
+              type="button"
+              aria-label={`Sort by name${sort.key === "name" ? `, currently ${sort.direction === "asc" ? "ascending" : "descending"}` : ""}`}
+              onClick={() => changeSort("name")}
+            >
+              Name <span aria-hidden="true">{sort.key === "name" ? (sort.direction === "asc" ? "↑" : "↓") : ""}</span>
+            </button>
+            <span>Size</span>
+            <button
+              type="button"
+              aria-label={`Sort by date${sort.key === "modified" ? `, currently ${sort.direction === "asc" ? "ascending" : "descending"}` : ""}`}
+              onClick={() => changeSort("modified")}
+            >
+              Date <span aria-hidden="true">{sort.key === "modified" ? (sort.direction === "asc" ? "↑" : "↓") : ""}</span>
+            </button>
           </div>
           {loading && <div className="empty">Loading this directory…</div>}
           {!loading && entries.length === 0 && <div className="empty">No supported videos or folders here.</div>}
-          {!loading && entries.map((entry) => entry.type === "directory" ? (
+          {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty">No matches in this folder.</div>}
+          {!loading && visibleEntries.map((entry) => entry.type === "directory" ? (
             <button className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
-              <span className="name"><i aria-hidden="true">↳</i>{entry.name}</span><span>Folder</span><span>—</span>
+              <span className="name"><i aria-hidden="true">↳</i>{entry.name}</span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
             </button>
           ) : (
             <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
