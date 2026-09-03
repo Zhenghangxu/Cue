@@ -2,6 +2,23 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleUserRound,
+  Folder,
+  ListTodo,
+  LoaderCircle,
+  Minus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
+import { AppHeader } from "./AppHeader";
 import { filterAndSortEntries, type EntrySort } from "./fileEntries";
 
 type FileEntry = {
@@ -85,6 +102,7 @@ export default function Home() {
   const [sort, setSort] = useState<EntrySort>({ key: "modified", direction: "desc" });
   const [selected, setSelected] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [queueMinimized, setQueueMinimized] = useState(true);
   const [initialQuotaRemaining, setInitialQuotaRemaining] = useState<number | null>(null);
   const [actionMode, setActionMode] = useState<"subtitles" | "rename">("subtitles");
   const [subtitleMode, setSubtitleMode] = useState("bilingual");
@@ -192,6 +210,14 @@ export default function Home() {
     });
   }
 
+  function clearCompletedJobs() {
+    setJobs((current) => {
+      const next = current.filter((job) => job.status !== "completed");
+      sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
+      return next;
+    });
+  }
+
   async function start() {
     if (!selectedPaths.length) return;
     setError("");
@@ -257,15 +283,67 @@ export default function Home() {
 
   return (
     <main>
-      <header className="hero">
-        <div className="mark" aria-hidden="true">字</div>
-        <div>
-          <p className="eyebrow">LOCAL WEBDAV TOOL</p>
-          <h1>Subtitle Maker</h1>
-          <p className="lede">Find, synchronize, and translate subtitles without downloading the full video.</p>
+      <AppHeader jobsControl={(
+        <div className="jobsDock">
+          <button
+            className={`jobsButton${busy ? " busy" : ""}`}
+            type="button"
+            onClick={() => setQueueMinimized((current) => !current)}
+            aria-label={`Jobs, ${jobs.length} total`}
+            aria-expanded={!queueMinimized}
+            aria-controls="job-queue"
+          >
+            <ListTodo size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span>Jobs</span>
+            <span className="jobsBadge" aria-hidden="true">{jobs.length}</span>
+          </button>
+
+          {!queueMinimized && (
+            <aside id="job-queue" className="queue" aria-live="polite" aria-label="Job queue">
+              <div className="queueHeader">
+                <div className="queueSummary">
+                  {busy && <LoaderCircle className="spinner" size={16} strokeWidth={1.75} aria-hidden="true" />}
+                  <span><strong>{completed}</strong> done · <strong>{failed}</strong> failed</span>
+                  <b>{busy ? `${pendingItems.length} active` : items.length ? "All finished" : "No jobs"}</b>
+                </div>
+                <div className="queueControls">
+                  <button
+                    className="queueIconButton"
+                    type="button"
+                    onClick={clearCompletedJobs}
+                    disabled={!jobs.some((job) => job.status === "completed")}
+                    aria-label="Clear completed jobs"
+                    title="Clear completed jobs"
+                  >
+                    <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
+                  </button>
+                  <button
+                    className="queueIconButton"
+                    type="button"
+                    onClick={() => setQueueMinimized(true)}
+                    aria-label="Close job queue"
+                    title="Close job queue"
+                  >
+                    <Minus size={14} strokeWidth={1.75} aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <div className="queueItems">
+                {items.length === 0 && <div className="queueEmpty">No jobs have been created yet.</div>}
+                {items.map((item, index) => (
+                  <div className="queueItem" key={`${item.path}-${index}`}>
+                    <div>
+                      <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
+                      <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
+                    </div>
+                    <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+                  </div>
+                ))}
+              </div>
+            </aside>
+          )}
         </div>
-        <Link className="settingsLink" href="/settings/">Settings →</Link>
-      </header>
+      )} />
 
       {health && !health.ready && (
         <section className="notice" role="alert">
@@ -276,35 +354,18 @@ export default function Home() {
         </section>
       )}
 
-      {items.length > 0 && (
-        <aside className="queue" aria-live="polite" aria-label="Job queue">
-          <div className="queueHeader">
-            <div className="queueTitle">
-              {busy && <span className="spinner" aria-hidden="true" />}
-              <div><p className="eyebrow">QUEUE</p><strong>{busy ? `${pendingItems.length} active` : "All finished"}</strong></div>
-            </div>
-            <span>{completed} done · {failed} failed</span>
-          </div>
-          <div className="queueItems">
-            {items.map((item, index) => (
-              <div className="queueItem" key={`${item.path}-${index}`}>
-                <div>
-                  <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
-                  <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
-                </div>
-                <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
-              </div>
-            ))}
-          </div>
-        </aside>
-      )}
-
       <section className="workspace" aria-label="WebDAV video browser">
         <nav className="breadcrumbs" aria-label="Directory path">
           {crumbs.map((crumb, index) => (
-            <span key={crumb.path || "root"}>
-              {index > 0 && <b aria-hidden="true">/</b>}
-              <button title={crumb.name} onClick={() => void loadDirectory(crumb.path)} disabled={loading}>
+            <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
+              {index > 0 && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
+              <button
+                type="button"
+                title={crumb.name}
+                onClick={() => void loadDirectory(crumb.path)}
+                disabled={loading}
+                aria-current={index === crumbs.length - 1 ? "page" : undefined}
+              >
                 {crumb.name}
               </button>
             </span>
@@ -312,13 +373,16 @@ export default function Home() {
         </nav>
 
         <div className="tableTools">
-          <input
-            type="search"
-            aria-label="Search this folder"
-            placeholder="Search this folder"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <label className="searchField">
+            <Search size={16} strokeWidth={1.75} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Search this folder"
+              placeholder="Search this folder"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
         </div>
 
         <div className="table" aria-label="Videos">
@@ -328,7 +392,10 @@ export default function Home() {
               aria-label={`Sort by name${sort.key === "name" ? `, currently ${sort.direction === "asc" ? "ascending" : "descending"}` : ""}`}
               onClick={() => changeSort("name")}
             >
-              Name <span aria-hidden="true">{sort.key === "name" ? (sort.direction === "asc" ? "↑" : "↓") : ""}</span>
+              Name
+              {sort.key === "name" && (sort.direction === "asc"
+                ? <ArrowUp size={12} strokeWidth={1.75} aria-hidden="true" />
+                : <ArrowDown size={12} strokeWidth={1.75} aria-hidden="true" />)}
             </button>
             <span>Size</span>
             <button
@@ -336,29 +403,40 @@ export default function Home() {
               aria-label={`Sort by date${sort.key === "modified" ? `, currently ${sort.direction === "asc" ? "ascending" : "descending"}` : ""}`}
               onClick={() => changeSort("modified")}
             >
-              Date <span aria-hidden="true">{sort.key === "modified" ? (sort.direction === "asc" ? "↑" : "↓") : ""}</span>
+              Date
+              {sort.key === "modified" && (sort.direction === "asc"
+                ? <ArrowUp size={12} strokeWidth={1.75} aria-hidden="true" />
+                : <ArrowDown size={12} strokeWidth={1.75} aria-hidden="true" />)}
             </button>
           </div>
-          {loading && <div className="empty">Loading this directory…</div>}
+          {loading && (
+            <div className="empty loadingState" role="status">
+              <LoaderCircle className="spinner" size={18} strokeWidth={1.75} aria-hidden="true" />
+              <span>Loading this directory…</span>
+            </div>
+          )}
           {!loading && entries.length === 0 && <div className="empty">No supported videos or folders here.</div>}
           {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty">No matches in this folder.</div>}
           {!loading && visibleEntries.map((entry) => entry.type === "directory" ? (
-            <button className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
-              <span className="name"><i aria-hidden="true">↳</i>{entry.name}</span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
+            <button type="button" className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
+              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
             </button>
           ) : (
             <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
               <span className="name">
-                <input
-                  type="checkbox"
-                  value={entry.path}
-                  checked={selected.includes(entry.path)}
-                  onChange={(event) => setSelected((current) => event.target.checked
-                    ? [...current, entry.path]
-                    : current.filter((path) => path !== entry.path))}
-                  disabled={pendingItems.some((item) => item.path === entry.path)}
-                />
-                {entry.name}
+                <span className="checkboxWrap">
+                  <input
+                    type="checkbox"
+                    value={entry.path}
+                    checked={selected.includes(entry.path)}
+                    onChange={(event) => setSelected((current) => event.target.checked
+                      ? [...current, entry.path]
+                      : current.filter((path) => path !== entry.path))}
+                    disabled={pendingItems.some((item) => item.path === entry.path)}
+                  />
+                  <span className="checkboxControl" aria-hidden="true"><Check size={12} strokeWidth={2.25} /></span>
+                </span>
+                <span className="fileName">{entry.name}</span>
               </span>
               <span>{formatSize(entry.size)}</span>
               <span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
@@ -367,13 +445,15 @@ export default function Home() {
         </div>
 
         <div className="actions">
-          <div>
+          <div className="usage">
             <span className="label">Usage</span>
-            <strong><span className="usageNumber">{totalTokens.toLocaleString()}</span> AI tokens · <span className="usageNumber">{quotaRemaining ?? "—"}</span> subtitles remain</strong>
+            <span className="usagePill"><strong>{totalTokens.toLocaleString()}</strong> AI tokens</span>
+            <span className="usagePill"><strong>{quotaRemaining ?? "—"}</strong> subtitles remaining</span>
           </div>
           <div className="createSplit">
             <button
               className="start"
+              type="button"
               onClick={() => {
                 if (actionMode === "rename") {
                   setRenameTitle("");
@@ -389,7 +469,9 @@ export default function Home() {
               <small>{actionModeLabel}</small>
             </button>
             {subtitleModes.length > 0 && <details className="modeMenu">
-              <summary aria-label="More actions" title="More actions">⌄</summary>
+              <summary aria-label="Choose subtitle action" title="Choose subtitle action">
+                <ChevronDown size={16} strokeWidth={1.75} aria-hidden="true" />
+              </summary>
               <div className="modeOptions">
                 {subtitleModes.map((option) => (
                   <button
@@ -402,7 +484,7 @@ export default function Home() {
                       event.currentTarget.closest("details")?.removeAttribute("open");
                     }}
                   >
-                    <span aria-hidden="true">{actionMode === "subtitles" && option.value === subtitleMode ? "✓" : ""}</span>{option.label}
+                    <span aria-hidden="true">{actionMode === "subtitles" && option.value === subtitleMode && <Check size={14} strokeWidth={1.75} />}</span>{option.label}
                   </button>
                 ))}
                 <button
@@ -413,7 +495,7 @@ export default function Home() {
                     event.currentTarget.closest("details")?.removeAttribute("open");
                   }}
                 >
-                  <span aria-hidden="true">{actionMode === "rename" ? "✓" : ""}</span>Smart rename
+                  <span aria-hidden="true">{actionMode === "rename" && <Check size={14} strokeWidth={1.75} />}</span>Smart rename
                 </button>
               </div>
             </details>}
@@ -438,7 +520,9 @@ export default function Home() {
               <p className="eyebrow">SMART RENAME</p>
               <h2 id="rename-title">Name {selectedPaths.length} selected video{selectedPaths.length === 1 ? "" : "s"}</h2>
             </div>
-            <button type="button" aria-label="Close smart rename" onClick={() => renameDialog.current?.close()} disabled={renaming}>×</button>
+            <button type="button" aria-label="Close smart rename" onClick={() => renameDialog.current?.close()} disabled={renaming}>
+              <X size={18} strokeWidth={1.75} aria-hidden="true" />
+            </button>
           </div>
           <label htmlFor="english-title">English title</label>
           <input
@@ -456,7 +540,7 @@ export default function Home() {
           <div className="dialogActions">
             <button type="button" onClick={() => renameDialog.current?.close()} disabled={renaming}>Cancel</button>
             <button className="start" type="submit" disabled={renaming || !renameTitle.trim()}>
-              {renaming ? "Renaming…" : "Rename files"}<span aria-hidden="true">→</span>
+              {renaming ? "Renaming…" : "Rename files"}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
             </button>
           </div>
         </form>
@@ -464,6 +548,9 @@ export default function Home() {
 
       {error && <p className="error" role="alert">{error}</p>}
       <footer>Only files inside the configured WebDAV scan path are visible to this app.</footer>
+      <Link className="avatarButton" href="/settings/" aria-label="Open settings" title="Open settings">
+        <CircleUserRound size={20} strokeWidth={1.75} aria-hidden="true" />
+      </Link>
     </main>
   );
 }
