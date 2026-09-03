@@ -29,6 +29,8 @@ type FileEntry = {
 
 type JobResult = {
   outputPath?: string;
+  existing?: boolean;
+  reusedSourceSidecar?: boolean;
   sourceLanguage?: string;
   release?: string;
   moviehashMatch?: boolean;
@@ -108,6 +110,7 @@ export default function Home() {
   const [actionMode, setActionMode] = useState<"subtitles" | "rename">("subtitles");
   const [subtitleMode, setSubtitleMode] = useState("bilingual");
   const [subtitleModes, setSubtitleModes] = useState<Option[]>([]);
+  const [sourceType, setSourceType] = useState<"webdav" | "local">("webdav");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -159,6 +162,7 @@ export default function Home() {
     api<SettingsResponse>("/api/settings")
       .then(({ values, options }) => {
         setSubtitleModes(options.subtitle_modes);
+        setSourceType(values.source_type === "local" ? "local" : "webdav");
         if (options.subtitle_modes.some(({ value }) => value === values.default_subtitle_mode)) {
           setSubtitleMode(values.default_subtitle_mode);
         }
@@ -379,7 +383,7 @@ export default function Home() {
         </section>
       )}
 
-      <section className="workspace" aria-label="WebDAV video browser">
+      <section className="workspace" aria-label={`${sourceType === "local" ? "Local" : "WebDAV"} video browser`}>
         <nav className="breadcrumbs" aria-label="Directory path">
           {crumbs.map((crumb, index) => (
             <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
@@ -580,7 +584,7 @@ export default function Home() {
       </dialog>
 
       {error && <p className="error" role="alert">{error}</p>}
-      <footer>Only files inside the configured WebDAV scan path are visible to this app.</footer>
+      <footer>Only files inside the configured {sourceType === "local" ? "local" : "WebDAV"} scan path are visible to this app.</footer>
     </main>
   );
 }

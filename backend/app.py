@@ -18,9 +18,11 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, ContextManager, Iterable, Iterator, Protocol
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import httpx
@@ -65,6 +67,10 @@ TARGET_LANGUAGES = {
 }
 SUBTITLE_MODES = {"target": "Target language only", "bilingual": "English & target language"}
 SETTING_DEFAULTS = {
+    "source_type": "webdav",
+    "subtitle_destination": "source",
+    "local_scan_path": "",
+    "local_output_path": "",
     "webdav_username": "",
     "webdav_endpoint": "",
     "webdav_scan_path": "",
@@ -91,6 +97,21 @@ LOGGER = logging.getLogger("uvicorn.error")
 
 class PipelineError(RuntimeError):
     pass
+
+
+def validated_local_root(value: str, label: str) -> str:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise PipelineError(f"{label} must be an absolute path")
+    try:
+        path = path.resolve(strict=True)
+    except OSError as exc:
+        raise PipelineError(f"{label} does not exist") from exc
+    if not path.is_dir():
+        raise PipelineError(f"{label} must be a directory")
+    if not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+        raise PipelineError(f"{label} must be readable and writable")
+    return str(path)
 
 
 def load_saved_settings() -> dict[str, str]:
@@ -127,6 +148,10 @@ class Config:
     default_subtitle_mode: str
     opensubtitles_username: str | None = None
     opensubtitles_password: str | None = None
+    source_type: str = "webdav"
+    subtitle_destination: str = "source"
+    local_scan_path: str = ""
+    local_output_path: str = ""
 
     @classmethod
     def load(cls) -> "Config":
@@ -134,10 +159,16 @@ class Config:
 
     @classmethod
     def from_settings(cls, values: dict[str, str], secrets: dict[str, str]) -> "Config":
+        source_type = values.get("source_type", "webdav").strip().lower()
+        destination = values.get("subtitle_destination", "source").strip().lower()
+        if source_type not in {"webdav", "local"}:
+            raise PipelineError("Media source is invalid")
+        if destination not in {"source", "local"}:
+            raise PipelineError("Subtitle destination is invalid")
+        if source_type == "local" and destination != "source":
+            raise PipelineError("Local media must save subtitles beside the source video")
+
         required = (
-            "webdav_username",
-            "webdav_endpoint",
-            "webdav_scan_path",
             "opensubtitles_consumer_name",
             "openai_base_url",
             "openai_model_id",
@@ -145,17 +176,23 @@ class Config:
             "target_language",
             "default_subtitle_mode",
         )
+        if source_type == "webdav":
+            required += ("webdav_username", "webdav_endpoint", "webdav_scan_path")
         missing = [name for name in required if not values.get(name)]
-        missing.extend(name for name in ("webdav_password", "opensubtitles_api_key", "openai_api_key") if not secrets.get(name))
+        required_secrets = ["opensubtitles_api_key", "openai_api_key"]
+        if source_type == "webdav":
+            required_secrets.append("webdav_password")
+        missing.extend(name for name in required_secrets if not secrets.get(name))
         if missing:
             raise PipelineError("Missing settings: " + ", ".join(sorted(set(missing))))
 
-        endpoint = values["webdav_endpoint"].strip()
-        if "://" not in endpoint:
-            endpoint = "https://" + endpoint
-        parsed = urlsplit(endpoint)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment:
-            raise PipelineError("WEBDAV_ENDPOINT must be an HTTP(S) host or base URL")
+        endpoint = values.get("webdav_endpoint", "").strip()
+        if source_type == "webdav":
+            if "://" not in endpoint:
+                endpoint = "https://" + endpoint
+            parsed = urlsplit(endpoint)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment:
+                raise PipelineError("WEBDAV_ENDPOINT must be an HTTP(S) host or base URL")
 
         effort = values["openai_reasoning_effort"].strip().lower()
         if effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
@@ -167,11 +204,22 @@ class Config:
         if subtitle_mode not in SUBTITLE_MODES:
             raise PipelineError("Default subtitle mode is invalid")
 
+        local_scan_path = ""
+        local_output_path = ""
+        if source_type == "local":
+            if not values.get("local_scan_path"):
+                raise PipelineError("Missing settings: local_scan_path")
+            local_scan_path = validated_local_root(values["local_scan_path"], "Local scan path")
+        if destination == "local":
+            if not values.get("local_output_path"):
+                raise PipelineError("Missing settings: local_output_path")
+            local_output_path = validated_local_root(values["local_output_path"], "Local output path")
+
         return cls(
-            webdav_username=values["webdav_username"],
-            webdav_password=secrets["webdav_password"],
-            webdav_endpoint=endpoint.rstrip("/") + "/",
-            webdav_scan_path=values["webdav_scan_path"],
+            webdav_username=values.get("webdav_username", ""),
+            webdav_password=secrets.get("webdav_password", ""),
+            webdav_endpoint=endpoint.rstrip("/") + "/" if endpoint else "",
+            webdav_scan_path=values.get("webdav_scan_path", ""),
             opensubtitles_api_key=secrets["opensubtitles_api_key"],
             opensubtitles_consumer_name=values["opensubtitles_consumer_name"],
             openai_base_url=values["openai_base_url"].rstrip("/") + "/",
@@ -182,6 +230,10 @@ class Config:
             default_subtitle_mode=subtitle_mode,
             opensubtitles_username=values.get("opensubtitles_username") or None,
             opensubtitles_password=secrets.get("opensubtitles_password") or None,
+            source_type=source_type,
+            subtitle_destination=destination,
+            local_scan_path=local_scan_path,
+            local_output_path=local_output_path,
         )
 
 
@@ -192,6 +244,22 @@ class FileEntry:
     type: str
     size: int | None = None
     modified: str | None = None
+
+
+class MediaSource(Protocol):
+    def list(self, relative: str, refresh: bool = False) -> list[FileEntry]: ...
+    def sidecars(self, video_path: str) -> list[FileEntry]: ...
+    def file_info(self, relative: str) -> FileEntry: ...
+    def exists(self, relative: str) -> bool: ...
+    def moviehash(self, relative: str, size: int) -> str: ...
+    def read_small(self, relative: str, limit: int = MAX_SUBTITLE_BYTES) -> bytes: ...
+    def sync_input(self, relative: str) -> ContextManager[str]: ...
+    def move(self, source: str, destination: str) -> None: ...
+
+
+class SubtitleDestination(Protocol):
+    def exists(self, relative: str) -> bool: ...
+    def put(self, relative: str, data: bytes) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -290,6 +358,18 @@ def choose_output_path(video_path: str, target_language: str, exists: Callable[[
     raise PipelineError(f"Both default and {TARGET_LANGUAGES[target_language][0]} subtitle files already exist")
 
 
+def numbered_output_path(preferred_name: str, exists: Callable[[str], bool]) -> str:
+    preferred = PurePosixPath(normalize_relative(preferred_name))
+    if preferred.name != str(preferred):
+        raise PipelineError("Flat output filenames cannot contain directories")
+    if not exists(preferred.name):
+        return preferred.name
+    index = 1
+    while exists(f"{preferred.stem} ({index}){preferred.suffix}"):
+        index += 1
+    return f"{preferred.stem} ({index}){preferred.suffix}"
+
+
 def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) -> str | None:
     video_stem = PurePosixPath(video_name).stem
     subtitle_stem = PurePosixPath(subtitle_name).stem
@@ -333,6 +413,10 @@ def batch_cues(cues: list[tuple[int, srt.Subtitle]]) -> list[list[tuple[int, srt
     if current:
         batches.append(current)
     return batches
+
+
+MEDIA_TOKENS: dict[str, tuple["WebDAV", str]] = {}
+MEDIA_TOKENS_LOCK = threading.Lock()
 
 
 class WebDAV:
@@ -568,6 +652,18 @@ class WebDAV:
         last = self.read_range(relative, size - HASH_BLOCK_SIZE, size - 1)
         return calculate_moviehash(size, first, last)
 
+    @contextmanager
+    def sync_input(self, relative: str) -> Iterator[str]:
+        relative = normalize_relative(relative)
+        token = secrets.token_urlsafe(24)
+        with MEDIA_TOKENS_LOCK:
+            MEDIA_TOKENS[token] = (self, relative)
+        try:
+            yield f"http://127.0.0.1:8000/internal/media/{token}"
+        finally:
+            with MEDIA_TOKENS_LOCK:
+                MEDIA_TOKENS.pop(token, None)
+
     def stream(self, relative: str, range_header: str | None) -> httpx.Response:
         headers = {"Range": range_header} if range_header else {}
         response = self._open_media(relative, headers)
@@ -620,6 +716,150 @@ class WebDAV:
         if not response.is_success:
             raise PipelineError(f"WebDAV rename failed ({response.status_code})")
         self.invalidate_directory_cache((source, destination))
+
+
+class LocalStorage:
+    def __init__(self, root: str):
+        self.root = Path(root).resolve(strict=True)
+
+    def _path(self, relative: str, *, must_exist: bool = False) -> Path:
+        relative = normalize_relative(relative)
+        candidate = self.root.joinpath(*PurePosixPath(relative).parts)
+        try:
+            resolved = candidate.resolve(strict=must_exist)
+        except OSError as exc:
+            raise PipelineError("Local path does not exist") from exc
+        if resolved != self.root and self.root not in resolved.parents:
+            raise PipelineError("Local path escaped the configured root")
+        return resolved
+
+    def _entry(self, path: Path) -> FileEntry | None:
+        try:
+            if path.is_symlink():
+                return None
+            resolved = path.resolve(strict=True)
+            if resolved != self.root and self.root not in resolved.parents:
+                return None
+            relative = path.relative_to(self.root).as_posix()
+            stat = resolved.stat()
+        except (OSError, ValueError):
+            return None
+        if resolved.is_dir():
+            entry_type = "directory"
+        elif resolved.is_file() and resolved.suffix.casefold() in VIDEO_EXTENSIONS:
+            entry_type = "video"
+        elif resolved.is_file():
+            entry_type = "file"
+        else:
+            return None
+        return FileEntry(
+            name=path.name,
+            path=relative,
+            type=entry_type,
+            size=None if entry_type == "directory" else stat.st_size,
+            modified=datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+        )
+
+    def list(self, relative: str, refresh: bool = False) -> list[FileEntry]:
+        del refresh
+        directory = self._path(relative, must_exist=True)
+        if not directory.is_dir():
+            raise PipelineError("Selected path is not a directory")
+        try:
+            entries = [entry for path in directory.iterdir() if (entry := self._entry(path))]
+        except OSError as exc:
+            raise PipelineError("Could not read the local directory") from exc
+        visible = [entry for entry in entries if entry.type in {"directory", "video"}]
+        return sorted(visible, key=lambda entry: (entry.type != "directory", entry.name.casefold()))
+
+    def sidecars(self, video_path: str) -> list[FileEntry]:
+        video = PurePosixPath(normalize_relative(video_path))
+        parent = "" if str(video.parent) == "." else str(video.parent)
+        directory = self._path(parent, must_exist=True)
+        prefix = video.stem.casefold()
+        try:
+            entries = [entry for path in directory.iterdir() if (entry := self._entry(path))]
+        except OSError as exc:
+            raise PipelineError("Could not inspect local sidecar subtitles") from exc
+        matches = []
+        for entry in entries:
+            candidate = PurePosixPath(entry.name)
+            candidate_stem = candidate.stem.casefold()
+            if (
+                entry.type == "file"
+                and candidate.suffix.casefold() in SUBTITLE_EXTENSIONS
+                and (
+                    candidate_stem == prefix
+                    or any(candidate_stem.startswith(prefix + separator) for separator in (".", "-", "_"))
+                )
+            ):
+                matches.append(entry)
+        return sorted(matches, key=lambda entry: (PurePosixPath(entry.name).suffix.casefold() != ".srt", entry.name.casefold()))
+
+    def file_info(self, relative: str) -> FileEntry:
+        path = self._path(relative, must_exist=True)
+        entry = self._entry(path)
+        if not entry or entry.type != "video" or not entry.size:
+            raise PipelineError("Selected path is not a supported video")
+        return entry
+
+    def exists(self, relative: str) -> bool:
+        return self._path(relative).exists()
+
+    def moviehash(self, relative: str, size: int) -> str:
+        path = self._path(relative, must_exist=True)
+        try:
+            with path.open("rb") as media:
+                first = media.read(HASH_BLOCK_SIZE)
+                media.seek(size - HASH_BLOCK_SIZE)
+                last = media.read(HASH_BLOCK_SIZE)
+        except OSError as exc:
+            raise PipelineError("Could not read the local video") from exc
+        return calculate_moviehash(size, first, last)
+
+    def read_small(self, relative: str, limit: int = MAX_SUBTITLE_BYTES) -> bytes:
+        path = self._path(relative, must_exist=True)
+        try:
+            if path.stat().st_size > limit:
+                raise PipelineError("Existing subtitle is unexpectedly large")
+            return path.read_bytes()
+        except PipelineError:
+            raise
+        except OSError as exc:
+            raise PipelineError("Could not read the local subtitle") from exc
+
+    @contextmanager
+    def sync_input(self, relative: str) -> Iterator[str]:
+        yield str(self._path(relative, must_exist=True))
+
+    def put(self, relative: str, data: bytes) -> None:
+        path = self._path(relative)
+        if not path.parent.is_dir():
+            raise PipelineError("The local output directory does not exist")
+        try:
+            with path.open("xb") as output:
+                output.write(data)
+        except FileExistsError as exc:
+            raise PipelineError("The output subtitle appeared before saving; nothing was overwritten") from exc
+        except OSError as exc:
+            raise PipelineError("Could not save the local subtitle") from exc
+
+    def move(self, source: str, destination: str) -> None:
+        source_path = self._path(source, must_exist=True)
+        destination_path = self._path(destination)
+        placeholder_created = False
+        try:
+            descriptor = os.open(destination_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(descriptor)
+            placeholder_created = True
+            os.replace(source_path, destination_path)
+        except FileExistsError as exc:
+            raise PipelineError("A file already exists with the suggested name") from exc
+        except OSError as exc:
+            raise PipelineError("Local rename failed") from exc
+        finally:
+            if placeholder_created and source_path.exists() and destination_path.exists():
+                destination_path.unlink(missing_ok=True)
 
 
 class OpenSubtitles:
@@ -847,7 +1087,7 @@ def smart_rename(
     paths: list[str],
     title: str,
     config: Config,
-    webdav: WebDAV,
+    source: MediaSource,
     client: Any | None = None,
 ) -> list[dict[str, str]]:
     payload = [
@@ -920,17 +1160,17 @@ def smart_rename(
             raise ValueError
         renames = []
         for index, source_path in enumerate(paths):
-            source = PurePosixPath(source_path)
+            source_file = PurePosixPath(source_path)
             name = by_id[index]
             if (
                 not name
                 or len(name) > 255
                 or name != PurePosixPath(name).name
                 or normalize_relative(name) != name
-                or PurePosixPath(name).suffix != source.suffix
+                or PurePosixPath(name).suffix != source_file.suffix
             ):
                 raise ValueError
-            renames.append({"from": source_path, "to": str(source.with_name(name))})
+            renames.append({"from": source_path, "to": str(source_file.with_name(name))})
         destinations = [item["to"] for item in renames]
         if len(set(destinations)) != len(destinations):
             raise ValueError
@@ -939,10 +1179,10 @@ def smart_rename(
 
     changes = [item for item in renames if item["from"] != item["to"]]
     for item in changes:
-        if webdav.exists(item["to"]):
+        if source.exists(item["to"]):
             raise PipelineError(f"A file already exists at {item['to']}")
     for item in changes:
-        webdav.move(item["from"], item["to"])
+        source.move(item["from"], item["to"])
     return changes
 
 
@@ -1049,22 +1289,15 @@ def translate_srt(
     return usage
 
 
-MEDIA_TOKENS: dict[str, str] = {}
-MEDIA_TOKENS_LOCK = threading.Lock()
-
-
-def sync_subtitle(video_path: str, input_path: Path, output_path: Path, _: Config) -> None:
+def sync_subtitle(video_input: str, input_path: Path, output_path: Path, _: Config) -> None:
     executable = shutil.which("ffsubsync")
     if not executable:
         raise PipelineError("ffsubsync is not installed; run `uv sync`")
-    token = secrets.token_urlsafe(24)
-    with MEDIA_TOKENS_LOCK:
-        MEDIA_TOKENS[token] = video_path
     try:
         result = subprocess.run(
             [
                 executable,
-                f"http://127.0.0.1:8000/internal/media/{token}",
+                video_input,
                 "-i",
                 str(input_path),
                 "-o",
@@ -1085,33 +1318,46 @@ def sync_subtitle(video_path: str, input_path: Path, output_path: Path, _: Confi
             raise PipelineError("Subtitle synchronization failed")
     except subprocess.TimeoutExpired as exc:
         raise PipelineError("Subtitle synchronization timed out") from exc
-    finally:
-        with MEDIA_TOKENS_LOCK:
-            MEDIA_TOKENS.pop(token, None)
 
 
 def process_video(
     relative: str,
     config: Config,
-    webdav: WebDAV,
+    source: MediaSource,
     opensubtitles: OpenSubtitles,
     progress: Callable[[str, str], None],
     syncer: Callable[[str, Path, Path, Config], None] = sync_subtitle,
     translator: Callable[..., dict[str, int]] = translate_srt,
     target_language: str | None = None,
     subtitle_mode: str | None = None,
+    destination: SubtitleDestination | None = None,
+    flat_output: bool = False,
 ) -> dict[str, Any]:
     target_language = target_language or config.target_language
     subtitle_mode = subtitle_mode or config.default_subtitle_mode
+    destination = destination or source
     target_name = TARGET_LANGUAGES[target_language][0]
     relative = normalize_relative(relative)
-    info = webdav.file_info(relative)
+    info = source.file_info(relative)
     progress("searching", "Checking existing sidecar subtitles")
     english_sidecar: tuple[FileEntry, bytes] | None = None
-    for entry in webdav.sidecars(relative):
-        data = webdav.read_small(entry.path)
+    for entry in source.sidecars(relative):
+        data = source.read_small(entry.path)
         language = detect_sidecar_language(info.name, entry.name, data)
         if subtitle_mode == "target" and language == target_language:
+            if flat_output:
+                output_path = numbered_output_path(PurePosixPath(entry.name).name, destination.exists)
+                progress("saving", f"Copying {PurePosixPath(output_path).name} to the local output folder")
+                destination.put(output_path, data)
+                return {
+                    "outputPath": output_path,
+                    "sourceLanguage": target_language,
+                    "release": f"Existing sidecar: {entry.name}",
+                    "moviehashMatch": False,
+                    "quota": {"remaining": None, "resetTimeUtc": None},
+                    "aiUsage": {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
+                    "reusedSourceSidecar": True,
+                }
             return {
                 "outputPath": entry.path,
                 "sourceLanguage": target_language,
@@ -1126,15 +1372,23 @@ def process_video(
 
     if english_sidecar:
         entry, subtitle_bytes = english_sidecar
-        output_path = language_output_path(relative, target_language, webdav.exists)
+        if flat_output:
+            preferred = f"{PurePosixPath(relative).stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+            output_path = numbered_output_path(preferred, destination.exists)
+        else:
+            output_path = language_output_path(relative, target_language, destination.exists)
         candidate = SubtitleCandidate(0, "en", f"Existing sidecar: {entry.name}", False)
         quota = {"remaining": None, "resetTimeUtc": None}
         source_suffix = PurePosixPath(entry.name).suffix.casefold()
         progress("downloading", "Using the existing English sidecar")
     else:
-        output_path = choose_output_path(relative, target_language, webdav.exists)
+        output_path = (
+            numbered_output_path(f"{PurePosixPath(relative).stem}.srt", destination.exists)
+            if flat_output
+            else choose_output_path(relative, target_language, destination.exists)
+        )
         progress("hashing", "Reading the first and last 64 KiB")
-        moviehash = webdav.moviehash(relative, info.size or 0)
+        moviehash = source.moviehash(relative, info.size or 0)
         progress("searching", "Finding an exact subtitle match")
         languages = ("en",) if subtitle_mode == "bilingual" else (target_language, "en")
         candidate = opensubtitles.find(info.name, moviehash, languages)
@@ -1144,24 +1398,26 @@ def process_video(
 
     with tempfile.TemporaryDirectory(prefix="subtitle-maker-") as temp_dir:
         temp = Path(temp_dir)
-        source = temp / f"source{source_suffix}"
+        subtitle_source = temp / f"source{source_suffix}"
         synced = temp / "synced.srt"
         final = temp / "final.srt"
-        source.write_bytes(subtitle_bytes)
+        subtitle_source.write_bytes(subtitle_bytes)
 
         if candidate.moviehash_match:
             try:
-                subtitles = list(srt.parse(source.read_text(encoding="utf-8-sig")))
+                subtitles = list(srt.parse(subtitle_source.read_text(encoding="utf-8-sig")))
                 if not subtitles:
                     raise ValueError("subtitle contains no cues")
                 synced.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
                 progress("synchronizing", "Exact video match; synchronization not needed")
             except (UnicodeDecodeError, ValueError, srt.SRTParseError):
                 progress("synchronizing", "Matching subtitles against a five-minute audio sample")
-                syncer(relative, source, synced, config)
+                with source.sync_input(relative) as video_input:
+                    syncer(video_input, subtitle_source, synced, config)
         else:
             progress("synchronizing", "Matching subtitles against a five-minute audio sample")
-            syncer(relative, source, synced, config)
+            with source.sync_input(relative) as video_input:
+                syncer(video_input, subtitle_source, synced, config)
         usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
         if candidate.language == "en":
             progress("translating", f"Translating English cues to {target_name}")
@@ -1175,8 +1431,8 @@ def process_video(
         else:
             shutil.copyfile(synced, final)
 
-        progress("uploading", f"Uploading {PurePosixPath(output_path).name}")
-        webdav.put(output_path, final.read_bytes())
+        progress("saving", f"Saving {PurePosixPath(output_path).name}")
+        destination.put(output_path, final.read_bytes())
 
     return {
         "outputPath": output_path,
@@ -1188,14 +1444,25 @@ def process_video(
     }
 
 
+def build_storage(config: Config) -> tuple[MediaSource, SubtitleDestination]:
+    source: MediaSource = WebDAV(config) if config.source_type == "webdav" else LocalStorage(config.local_scan_path)
+    destination: SubtitleDestination = (
+        source if config.subtitle_destination == "source" else LocalStorage(config.local_output_path)
+    )
+    return source, destination
+
+
 try:
     CONFIG = Config.load()
     CONFIG_ERROR: str | None = None
-    WEBDAV = WebDAV(CONFIG)
+    SOURCE, DESTINATION = build_storage(CONFIG)
+    WEBDAV = SOURCE if isinstance(SOURCE, WebDAV) else None
     OPENSUBTITLES = OpenSubtitles(CONFIG)
 except Exception as exc:
     CONFIG = None
     CONFIG_ERROR = str(exc)
+    SOURCE = None
+    DESTINATION = None
     WEBDAV = None
     OPENSUBTITLES = None
 
@@ -1204,10 +1471,10 @@ JOBS_LOCK = threading.Lock()
 EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="media-job")
 
 
-def require_services() -> tuple[Config, WebDAV, OpenSubtitles]:
-    if not CONFIG or not WEBDAV or not OPENSUBTITLES:
+def require_services() -> tuple[Config, MediaSource, SubtitleDestination, OpenSubtitles]:
+    if not CONFIG or not SOURCE or not DESTINATION or not OPENSUBTITLES:
         raise HTTPException(status_code=503, detail=CONFIG_ERROR or "Application is not configured")
-    return CONFIG, WEBDAV, OPENSUBTITLES
+    return CONFIG, SOURCE, DESTINATION, OPENSUBTITLES
 
 
 def update_job(job_id: str, item_index: int, stage: str, message: str) -> None:
@@ -1222,7 +1489,7 @@ def update_job(job_id: str, item_index: int, stage: str, message: str) -> None:
 
 def run_job(job_id: str) -> None:
     try:
-        config, webdav, opensubtitles = require_services()
+        config, source, destination, opensubtitles = require_services()
         ai = OpenAI(
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
@@ -1244,15 +1511,15 @@ def run_job(job_id: str) -> None:
             try:
                 if kind == "rename":
                     update_job(job_id, index, "renaming", "Choosing a VidHub filename")
-                    webdav.file_info(path)
-                    changes = smart_rename([path], rename_title or "", config, webdav, ai)
+                    source.file_info(path)
+                    changes = smart_rename([path], rename_title or "", config, source, ai)
                     result = changes[0] if changes else {"from": path, "to": path}
                 else:
                     update_job(job_id, index, "running", "Starting")
                     result = process_video(
                         path,
                         config,
-                        webdav,
+                        source,
                         opensubtitles,
                         lambda stage, message, index=index: update_job(job_id, index, stage, message),
                         translator=lambda source, destination, config, **options: translate_srt(
@@ -1260,6 +1527,8 @@ def run_job(job_id: str) -> None:
                         ),
                         target_language=target_language,
                         subtitle_mode=subtitle_mode,
+                        destination=destination,
+                        flat_output=config.subtitle_destination == "local",
                     )
             except PipelineError as exc:
                 with JOBS_LOCK:
@@ -1286,7 +1555,12 @@ def run_job(job_id: str) -> None:
                             else "Name already matched"
                         )
                     else:
-                        item.message = "Existing target subtitle found" if result.get("existing") else "Subtitle created successfully"
+                        if result.get("existing"):
+                            item.message = "Existing target subtitle found"
+                        elif result.get("reusedSourceSidecar"):
+                            item.message = "Existing target subtitle copied"
+                        else:
+                            item.message = "Subtitle created successfully"
                     item.result = result
 
         with JOBS_LOCK:
@@ -1399,6 +1673,14 @@ def get_settings() -> dict[str, Any]:
             "options": {
                 "target_languages": [{"value": code, "label": value[0]} for code, value in TARGET_LANGUAGES.items()],
                 "subtitle_modes": [{"value": code, "label": label} for code, label in SUBTITLE_MODES.items()],
+                "source_types": [
+                    {"value": "webdav", "label": "WebDAV"},
+                    {"value": "local", "label": "Local folder"},
+                ],
+                "subtitle_destinations": [
+                    {"value": "source", "label": "Beside source video"},
+                    {"value": "local", "label": "Local output folder"},
+                ],
             },
         }
     except PipelineError as exc:
@@ -1472,17 +1754,17 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/files")
 def files(path: str = Query(default=""), refresh: bool = Query(default=False)) -> dict[str, Any]:
-    _, webdav, _ = require_services()
+    _, source, _, _ = require_services()
     try:
         relative = normalize_relative(path)
-        return {"path": relative, "entries": [asdict(entry) for entry in webdav.list(relative, refresh=refresh)]}
+        return {"path": relative, "entries": [asdict(entry) for entry in source.list(relative, refresh=refresh)]}
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/quota")
 def quota() -> dict[str, int]:
-    _, _, opensubtitles = require_services()
+    _, _, _, opensubtitles = require_services()
     try:
         return {"remaining": opensubtitles.remaining_downloads()}
     except PipelineError as exc:
@@ -1527,7 +1809,7 @@ def rename_files(body: RenameRequest) -> dict[str, str]:
 
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobRequest) -> dict[str, str]:
-    config, _, _ = require_services()
+    config, _, _, _ = require_services()
     if not body.paths:
         raise HTTPException(status_code=400, detail="Select at least one video")
     try:
@@ -1572,11 +1854,11 @@ def get_job(job_id: str) -> dict[str, Any]:
 
 @app.api_route("/internal/media/{token}", methods=["GET", "HEAD"], include_in_schema=False)
 def media_proxy(token: str, request: Request) -> Response:
-    _, webdav, _ = require_services()
     with MEDIA_TOKENS_LOCK:
-        relative = MEDIA_TOKENS.get(token)
-    if not relative:
+        media = MEDIA_TOKENS.get(token)
+    if not media:
         raise HTTPException(status_code=404, detail="Media token expired")
+    webdav, relative = media
     try:
         upstream = webdav.stream(relative, request.headers.get("range"))
     except PipelineError as exc:

@@ -3,6 +3,7 @@ import shutil
 import struct
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from backend.app import (
     Job,
     JobItem,
     JobRequest,
+    LocalStorage,
     OpenSubtitles,
     PipelineError,
     RenameRequest,
@@ -32,6 +34,7 @@ from backend.app import (
     choose_output_path,
     detect_sidecar_language,
     normalize_relative,
+    numbered_output_path,
     process_video,
     create_job,
     get_settings,
@@ -98,7 +101,12 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(defaults["default_subtitle_mode"], "bilingual")
             self.assertTrue(update_settings(SettingsRequest(values=values, secrets=secrets))["saved"])
             response = get_settings()
-            self.assertEqual(response["values"], values)
+            self.assertEqual(response["values"], {
+                "source_type": "webdav",
+                "subtitle_destination": "source",
+                "local_scan_path": "",
+                "local_output_path": "",
+            } | values)
             self.assertEqual(len(response["options"]["target_languages"]), 20)
             self.assertEqual(response["options"]["subtitle_modes"][-1], {"value": "bilingual", "label": "English & target language"})
             self.assertTrue(all(response["secrets"].values()))
@@ -128,6 +136,51 @@ class CoreTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(PipelineError):
                 normalize_relative(value)
 
+    def test_local_configuration_does_not_require_webdav(self):
+        with tempfile.TemporaryDirectory() as directory:
+            values = {
+                "source_type": "local",
+                "subtitle_destination": "source",
+                "local_scan_path": directory,
+                "local_output_path": "",
+                "webdav_username": "",
+                "webdav_endpoint": "",
+                "webdav_scan_path": "",
+                "opensubtitles_consumer_name": "tests",
+                "opensubtitles_username": "",
+                "openai_base_url": "https://ai.example.test/v1",
+                "openai_model_id": "model",
+                "openai_reasoning_effort": "low",
+                "target_language": "zh-cn",
+                "default_subtitle_mode": "target",
+            }
+            local = Config.from_settings(values, {"opensubtitles_api_key": "key", "openai_api_key": "ai"})
+            self.assertEqual(local.source_type, "local")
+            self.assertEqual(local.local_scan_path, str(Path(directory).resolve()))
+            webdav_to_local = Config.from_settings(
+                values | {
+                    "source_type": "webdav",
+                    "subtitle_destination": "local",
+                    "local_scan_path": "",
+                    "local_output_path": directory,
+                    "webdav_username": "user",
+                    "webdav_endpoint": "dav.example.test",
+                    "webdav_scan_path": "Media",
+                },
+                {
+                    "webdav_password": "password",
+                    "opensubtitles_api_key": "key",
+                    "openai_api_key": "ai",
+                },
+            )
+            self.assertEqual(webdav_to_local.subtitle_destination, "local")
+            self.assertEqual(webdav_to_local.local_output_path, str(Path(directory).resolve()))
+            with self.assertRaisesRegex(PipelineError, "beside the source"):
+                Config.from_settings(values | {"subtitle_destination": "local"}, {
+                    "opensubtitles_api_key": "key",
+                    "openai_api_key": "ai",
+                })
+
     def test_moviehash_matches_unsigned_little_endian_sum(self):
         first = struct.pack("<8192Q", *range(8192))
         last = struct.pack("<8192Q", *range(8192, 16384))
@@ -143,6 +196,8 @@ class CoreTests(unittest.TestCase):
         )
         with self.assertRaises(PipelineError):
             choose_output_path("Movies/Movie.mkv", "es", lambda _: True)
+        existing = {"Movie.srt", "Movie (1).srt"}
+        self.assertEqual(numbered_output_path("Movie.srt", existing.__contains__), "Movie (2).srt")
 
     def test_cues_are_bounded_by_count_and_characters(self):
         cues = [
@@ -303,9 +358,10 @@ class CoreTests(unittest.TestCase):
             with patch("backend.app.shutil.which", return_value="ffsubsync"), patch(
                 "backend.app.subprocess.run", side_effect=run
             ) as process:
-                sync_subtitle("Movie.mkv", source, output, config())
+                sync_subtitle("/media/Movie.mkv", source, output, config())
 
         arguments = process.call_args.args[0]
+        self.assertEqual(arguments[1], "/media/Movie.mkv")
         self.assertEqual(arguments[arguments.index("--frame-rate") + 1], "16000")
 
     def test_sidecar_language_uses_content_and_language_suffix(self):
@@ -398,6 +454,43 @@ class WebDAVTests(unittest.TestCase):
         )
 
 
+class LocalStorageTests(unittest.TestCase):
+    def test_browses_hashes_writes_and_renames_inside_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shows = root / "Shows"
+            shows.mkdir()
+            video = shows / "Movie.mkv"
+            video.write_bytes(bytes(range(256)) * 512)
+            sidecar = shows / "Movie.en.srt"
+            sidecar.write_bytes(SRT)
+            (shows / "notes.txt").write_text("ignore", encoding="utf-8")
+            outside = root.parent / f"{root.name}-outside.mkv"
+            outside.write_bytes(b"outside")
+            try:
+                (shows / "escape.mkv").symlink_to(outside)
+                storage = LocalStorage(str(root))
+                self.assertEqual([(entry.type, entry.path) for entry in storage.list("")], [("directory", "Shows")])
+                self.assertEqual([entry.path for entry in storage.list("Shows")], ["Shows/Movie.mkv"])
+                self.assertEqual(storage.file_info("Shows/Movie.mkv").size, 131_072)
+                self.assertEqual([entry.path for entry in storage.sidecars("Shows/Movie.mkv")], ["Shows/Movie.en.srt"])
+                self.assertEqual(storage.read_small("Shows/Movie.en.srt"), SRT)
+                self.assertEqual(len(storage.moviehash("Shows/Movie.mkv", 131_072)), 16)
+                with storage.sync_input("Shows/Movie.mkv") as media_input:
+                    self.assertEqual(media_input, str(video.resolve()))
+
+                storage.put("Shows/Movie.zh-Hans.srt", SRT)
+                with self.assertRaisesRegex(PipelineError, "nothing was overwritten"):
+                    storage.put("Shows/Movie.zh-Hans.srt", b"replacement")
+                storage.move("Shows/Movie.mkv", "Shows/Renamed.mkv")
+                self.assertFalse(video.exists())
+                self.assertTrue((shows / "Renamed.mkv").exists())
+                with self.assertRaises(PipelineError):
+                    storage.file_info("Shows/escape.mkv")
+            finally:
+                outside.unlink(missing_ok=True)
+
+
 class FakeWebDAV:
     def __init__(self):
         self.uploads = {}
@@ -423,6 +516,10 @@ class FakeWebDAV:
 
     def put(self, relative, data):
         self.uploads[relative] = data
+
+    @contextmanager
+    def sync_input(self, relative):
+        yield f"https://media.example.test/{relative}"
 
 
 class FakeOpenSubtitles:
@@ -611,6 +708,63 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result["aiUsage"]["totalTokens"], 15)
         self.assertEqual(opensubtitles.languages, ("en",))
 
+    def test_webdav_target_sidecar_is_copied_to_numbered_local_output(self):
+        webdav = FakeWebDAV()
+        entry = FileEntry("Movie.zh-Hans.srt", "Shows/Movie.zh-Hans.srt", "file", 20)
+        data = "1\n00:00:01,000 --> 00:00:02,000\n你好\n\n".encode()
+        webdav.sidecar_entries = [entry]
+        webdav.sidecar_data[entry.path] = data
+
+        class ForbiddenOpenSubtitles:
+            def find(self, *_):
+                raise AssertionError("Existing target subtitle must be reused")
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = LocalStorage(directory)
+            first = process_video(
+                "Shows/Movie.mkv",
+                config(),
+                webdav,
+                ForbiddenOpenSubtitles(),
+                lambda *_: None,
+                subtitle_mode="target",
+                destination=destination,
+                flat_output=True,
+            )
+            second = process_video(
+                "Shows/Movie.mkv",
+                config(),
+                webdav,
+                ForbiddenOpenSubtitles(),
+                lambda *_: None,
+                subtitle_mode="target",
+                destination=destination,
+                flat_output=True,
+            )
+            self.assertEqual(first["outputPath"], "Movie.zh-Hans.srt")
+            self.assertEqual(second["outputPath"], "Movie.zh-Hans (1).srt")
+            self.assertTrue(first["reusedSourceSidecar"])
+            self.assertEqual((Path(directory) / second["outputPath"]).read_bytes(), data)
+            self.assertEqual(webdav.uploads, {})
+
+    def test_local_source_writes_beside_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "Shows"
+            folder.mkdir()
+            (folder / "Movie.mkv").write_bytes(bytes(range(256)) * 512)
+            storage = LocalStorage(directory)
+            result = process_video(
+                "Shows/Movie.mkv",
+                config(),
+                storage,
+                FakeOpenSubtitles("zh-cn"),
+                lambda *_: None,
+                subtitle_mode="target",
+            )
+            self.assertEqual(result["outputPath"], "Shows/Movie.srt")
+            self.assertEqual((folder / "Movie.srt").read_bytes(), SRT)
+
     def test_no_subtitle_stops_before_download_or_upload(self):
         webdav = FakeWebDAV()
 
@@ -644,7 +798,7 @@ class BatchJobTests(unittest.TestCase):
 
     def test_backend_logs_rejected_requests_with_correlation_id(self):
         with (
-            patch("backend.app.require_services", return_value=(config(), object(), object())),
+            patch("backend.app.require_services", return_value=(config(), object(), object(), object())),
             TestClient(app) as client,
             self.assertLogs("uvicorn.error", level="INFO") as captured,
         ):
@@ -667,7 +821,7 @@ class BatchJobTests(unittest.TestCase):
 
     def test_create_job_validates_paths_keeps_order_and_queues_more(self):
         job_config = Config(**(config().__dict__ | {"target_language": "es"}))
-        with patch("backend.app.require_services", return_value=(job_config, object(), object())), patch(
+        with patch("backend.app.require_services", return_value=(job_config, object(), object(), object())), patch(
             "backend.app.EXECUTOR.submit"
         ) as submit:
             for paths in ([], ["Movie.mkv", "./Movie.mkv"], ["../Movie.mkv"]):
@@ -723,7 +877,7 @@ class BatchJobTests(unittest.TestCase):
         rename_config = replace(config(), openai_reasoning_effort="high")
         paths = ["Shows/obscure.01.1080p.mkv", "Shows/obscure.02.1080p.mkv"]
         with (
-            patch("backend.app.require_services", return_value=(rename_config, webdav, object())),
+            patch("backend.app.require_services", return_value=(rename_config, webdav, webdav, object())),
             patch("backend.app.OpenAI", return_value=ai),
             patch("backend.app.EXECUTOR.submit") as submit,
             patch("backend.app.update_job", wraps=update_job) as progress,
@@ -767,7 +921,7 @@ class BatchJobTests(unittest.TestCase):
             return {"existing": False, "outputPath": path.replace(".mkv", ".srt")}
 
         with (
-            patch("backend.app.require_services", return_value=(config(), object(), object())),
+            patch("backend.app.require_services", return_value=(config(), object(), object(), object())),
             patch("backend.app.OpenAI"),
             patch("backend.app.process_video", side_effect=process),
         ):
@@ -781,7 +935,7 @@ class BatchJobTests(unittest.TestCase):
     def test_all_failed_batch_is_failed(self):
         JOBS["batch"] = Job(id="batch", items=[JobItem(path="A.mkv"), JobItem(path="B.mkv")])
         with (
-            patch("backend.app.require_services", return_value=(config(), object(), object())),
+            patch("backend.app.require_services", return_value=(config(), object(), object(), object())),
             patch("backend.app.OpenAI"),
             patch("backend.app.process_video", side_effect=PipelineError("No subtitle")),
         ):

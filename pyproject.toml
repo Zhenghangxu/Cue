@@ -1,7 +1,7 @@
 [project]
 name = "subtitle-maker"
 version = "0.1.0"
-description = "Local WebDAV subtitle finder, synchronizer, and translator"
+description = "Local and WebDAV subtitle finder, synchronizer, and translator"
 requires-python = ">=3.13"
 dependencies = [
   "chardet>=7,<8",

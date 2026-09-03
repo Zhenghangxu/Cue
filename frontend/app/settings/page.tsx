@@ -7,10 +7,16 @@ import { NativeSelect } from "../NativeSelect";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 type Option = { value: string; label: string };
-type SettingsOptions = { target_languages: Option[]; subtitle_modes: Option[] };
+type SettingsOptions = {
+  target_languages: Option[];
+  subtitle_modes: Option[];
+  source_types: Option[];
+  subtitle_destinations: Option[];
+};
 type SettingField = {
   name: string;
   label: string;
+  separatorBefore?: boolean;
   secret?: boolean;
   optional?: boolean;
   type?: string;
@@ -18,6 +24,15 @@ type SettingField = {
   optionKey?: keyof SettingsOptions;
 };
 const SECTIONS: { title: string; fields: SettingField[] }[] = [
+  {
+    title: "Storage",
+    fields: [
+      { name: "source_type", label: "Media source", optionKey: "source_types" },
+      { name: "subtitle_destination", label: "Save subtitles", optionKey: "subtitle_destinations" },
+      { name: "local_scan_path", label: "Scan path", separatorBefore: true },
+      { name: "local_output_path", label: "Output folder", separatorBefore: true },
+    ],
+  },
   {
     title: "Subtitles",
     fields: [
@@ -58,6 +73,15 @@ const SECTIONS: { title: string; fields: SettingField[] }[] = [
   },
 ];
 
+function fieldIsVisible(field: SettingField, values: Record<string, string>) {
+  const source = values.source_type ?? "webdav";
+  const destination = values.subtitle_destination ?? "source";
+  if (field.name.startsWith("webdav_")) return source === "webdav";
+  if (field.name === "local_scan_path") return source === "local";
+  if (field.name === "local_output_path") return source === "webdav" && destination === "local";
+  return true;
+}
+
 type SettingsResponse = {
   values: Record<string, string>;
   secrets: Record<string, boolean>;
@@ -68,7 +92,12 @@ export default function Settings() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
   const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({});
-  const [options, setOptions] = useState<SettingsOptions>({ target_languages: [], subtitle_modes: [] });
+  const [options, setOptions] = useState<SettingsOptions>({
+    target_languages: [],
+    subtitle_modes: [],
+    source_types: [],
+    subtitle_destinations: [],
+  });
   const [clearSecrets, setClearSecrets] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -128,20 +157,32 @@ export default function Settings() {
           <span>Saved secret values are never sent back to this page.</span>
         </div>
         <div className="settingsGrid">
-          {SECTIONS.map((section) => (
-            <fieldset key={section.title}>
+          {SECTIONS.map((section) => {
+            const fields = section.fields.filter((field) => fieldIsVisible(field, values));
+            if (!fields.length) return null;
+            return <fieldset key={section.title}>
               <legend>{section.title}</legend>
-              {section.fields.map((field) => (
-                <div className="settingField" key={field.name}>
+              {fields.map((field) => (
+                <div className={`settingField${field.separatorBefore ? " settingFieldSeparated" : ""}`} key={field.name}>
                   <label htmlFor={field.name}>{field.label}{field.optional && <small>Optional</small>}</label>
                   {field.options || field.optionKey ? (
                     <NativeSelect
                       id={field.name}
                       value={values[field.name] ?? ""}
-                      onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
+                      onChange={(event) => setValues((current) => ({
+                        ...current,
+                        [field.name]: event.target.value,
+                        ...(field.name === "source_type" && event.target.value === "local"
+                          ? { subtitle_destination: "source" }
+                          : {}),
+                      }))}
                       disabled={loading || saving}
                     >
-                      {(field.options ?? options[field.optionKey!]).map((option) => (
+                      {(field.options ?? options[field.optionKey!] ?? [])
+                        .filter((option) => field.name !== "subtitle_destination"
+                          || values.source_type !== "local"
+                          || option.value === "source")
+                        .map((option) => (
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </NativeSelect>
@@ -175,8 +216,8 @@ export default function Settings() {
                   )}
                 </div>
               ))}
-            </fieldset>
-          ))}
+            </fieldset>;
+          })}
         </div>
         <div className="settingsActions">
           <div aria-live="polite">
