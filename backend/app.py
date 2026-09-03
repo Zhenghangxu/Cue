@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -17,9 +18,10 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, AsyncIterator, Callable, Iterable
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import httpx
@@ -62,7 +64,11 @@ TARGET_LANGUAGES = {
     "uk": ("Ukrainian", "uk"),
     "cs": ("Czech", "cs"),
 }
-SUBTITLE_MODES = {"target": "Target language only", "bilingual": "English & target language"}
+SUBTITLE_MODES = {
+    "target": "Target language only",
+    "bilingual": "English & target language",
+    "minimalistic": "Minimalistic",
+}
 SETTING_DEFAULTS = {
     "webdav_username": "",
     "webdav_endpoint": "",
@@ -74,6 +80,7 @@ SETTING_DEFAULTS = {
     "openai_reasoning_effort": "low",
     "target_language": "zh-cn",
     "default_subtitle_mode": "bilingual",
+    "minimal_frequency_tier": "2000",
 }
 SECRET_SETTINGS = ("webdav_password", "opensubtitles_api_key", "opensubtitles_password", "openai_api_key")
 SECRET_ENV_NAMES = {key: key.upper() for key in SECRET_SETTINGS}
@@ -84,10 +91,51 @@ MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 TERMINAL_STAGES = {"completed", "failed"}
 DAV = "{DAV:}"
 LOGGER = logging.getLogger("uvicorn.error")
+FREQUENCY_PATH = BASE_DIR / "backend" / "frequency_data.json"
+FREQUENCY_DATA: dict[str, Any] = {}
+FREQUENCY_READY = threading.Event()
+FREQUENCY_ERROR: str | None = None
+WORD_PATTERN = re.compile(r"\*|[A-Za-z]+(?:['’][A-Za-z]+)*")
 
 
 class PipelineError(RuntimeError):
     pass
+
+
+def phrase_pattern(value: str, lemmas: dict[str, str]) -> tuple[str, ...]:
+    value = re.sub(r"\([^)]*\)", "", value.replace("*self", "*"))
+    value = re.sub(r"([A-Za-z’']+)/[A-Za-z’']+", r"\1", value)
+    return tuple("*" if token == "*" else lemmas.get(token.casefold(), token.casefold()) for token in WORD_PATTERN.findall(value))
+
+
+def load_frequency_data(path: Path = FREQUENCY_PATH) -> None:
+    global FREQUENCY_DATA, FREQUENCY_ERROR
+    FREQUENCY_READY.clear()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        words, lemmas, phrases = payload["words"], payload["lemmas"], payload["phrases"]
+        if payload.get("_meta", {}).get("ngsl_headwords") != 2809 or len(phrases) < 500:
+            raise ValueError("frequency data was incomplete")
+        patterns: dict[tuple[str, ...], int] = {}
+        for phrase, rank in phrases.items():
+            pattern = phrase_pattern(phrase, lemmas)
+            if len(pattern) > 1:
+                patterns[pattern] = max(patterns.get(pattern, 0), int(rank))
+        FREQUENCY_DATA = {"words": words, "lemmas": lemmas, "phrases": patterns}
+        FREQUENCY_ERROR = None
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        FREQUENCY_DATA = {}
+        FREQUENCY_ERROR = str(exc)
+    finally:
+        FREQUENCY_READY.set()
+
+
+def frequency_data() -> dict[str, Any]:
+    if not FREQUENCY_READY.wait(timeout=30):
+        raise PipelineError("Minimalistic frequency data is still loading")
+    if FREQUENCY_ERROR:
+        raise PipelineError("Could not load Minimalistic frequency data")
+    return FREQUENCY_DATA
 
 
 def load_saved_settings() -> dict[str, str]:
@@ -122,6 +170,7 @@ class Config:
     openai_reasoning_effort: str
     target_language: str
     default_subtitle_mode: str
+    minimal_frequency_tier: int = 2000
     opensubtitles_username: str | None = None
     opensubtitles_password: str | None = None
 
@@ -163,6 +212,12 @@ class Config:
         subtitle_mode = values["default_subtitle_mode"].strip().lower()
         if subtitle_mode not in SUBTITLE_MODES:
             raise PipelineError("Default subtitle mode is invalid")
+        try:
+            minimal_frequency_tier = int(values["minimal_frequency_tier"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PipelineError("Minimalistic frequency tier is invalid") from exc
+        if minimal_frequency_tier not in {1000, 2000, 3000, 4000, 5000}:
+            raise PipelineError("Minimalistic frequency tier is invalid")
 
         return cls(
             webdav_username=values["webdav_username"],
@@ -177,6 +232,7 @@ class Config:
             openai_reasoning_effort=effort,
             target_language=target_language,
             default_subtitle_mode=subtitle_mode,
+            minimal_frequency_tier=minimal_frequency_tier,
             opensubtitles_username=values.get("opensubtitles_username") or None,
             opensubtitles_password=secrets.get("opensubtitles_password") or None,
         )
@@ -206,6 +262,8 @@ class JobItem:
     message: str = "Waiting to start"
     result: dict[str, Any] | None = None
     error: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
 
 
 @dataclass
@@ -259,24 +317,43 @@ def normalize_release_filename(filename: str) -> str:
     return f"{match.group(1)} {match.group(2)}{match.group(3)}" if match else filename
 
 
-def language_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
+def language_output_path(
+    video_path: str,
+    target_language: str,
+    exists: Callable[[str], bool],
+    subtitle_mode: str = "target",
+) -> str:
     video = PurePosixPath(normalize_relative(video_path))
     parent = "" if str(video.parent) == "." else str(video.parent)
-    name = f"{video.stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+    tag = TARGET_LANGUAGES[target_language][1]
+    name = f"{video.stem}.minimal.{tag}.ass" if subtitle_mode == "minimalistic" else f"{video.stem}.{tag}.srt"
     path = f"{parent}/{name}" if parent else name
     if exists(path):
+        if subtitle_mode == "minimalistic":
+            raise PipelineError("The Minimalistic subtitle file already exists")
         raise PipelineError(f"The {TARGET_LANGUAGES[target_language][0]} subtitle file already exists")
     return path
 
 
-def choose_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
+def choose_output_path(
+    video_path: str,
+    target_language: str,
+    exists: Callable[[str], bool],
+    subtitle_mode: str = "target",
+) -> str:
     video = PurePosixPath(normalize_relative(video_path))
     parent = "" if str(video.parent) == "." else str(video.parent)
-    names = [f"{video.stem}.srt", f"{video.stem}.{TARGET_LANGUAGES[target_language][1]}.srt"]
+    tag = TARGET_LANGUAGES[target_language][1]
+    names = [f"{video.stem}.minimal.{tag}.ass"] if subtitle_mode == "minimalistic" else [
+        f"{video.stem}.srt",
+        f"{video.stem}.{tag}.srt",
+    ]
     for name in names:
         path = f"{parent}/{name}" if parent else name
         if not exists(path):
             return path
+    if subtitle_mode == "minimalistic":
+        raise PipelineError("The Minimalistic subtitle file already exists")
     raise PipelineError(f"Both default and {TARGET_LANGUAGES[target_language][0]} subtitle files already exist")
 
 
@@ -807,6 +884,147 @@ def translation_schema() -> dict[str, Any]:
     }
 
 
+def minimalistic_schema() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "subtitle_glosses",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "translations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "glosses": {
+                                    "type": "array",
+                                    "maxItems": 3,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "candidate": {"type": "integer"},
+                                            "text": {"type": "string"},
+                                        },
+                                        "required": ["candidate", "text"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
+                            "required": ["id", "glosses"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["translations"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def minimalistic_instructions(target_language: str) -> str:
+    return (
+        f"For each English subtitle cue, choose up to three supplied candidates that most help comprehension and translate only those "
+        f"into concise {TARGET_LANGUAGES[target_language][0]} glosses. Omit names, acronyms, and items that should not be translated. "
+        "Keep each candidate id unchanged, return every cue id exactly once, and output only the required JSON schema."
+    )
+
+
+def plain_subtitle_text(value: str) -> str:
+    value = re.sub(r"\{\\[^}]*\}", "", value)
+    return " ".join(re.sub(r"<[^>]+>", "", value).replace("\\N", "\n").split())
+
+
+def minimal_candidates(text: str, data: dict[str, Any], tier: int) -> tuple[str, list[dict[str, Any]]]:
+    plain = plain_subtitle_text(text)
+    matches = list(WORD_PATTERN.finditer(plain))
+    lemmas = [data["lemmas"].get(match.group().casefold(), match.group().casefold()) for match in matches]
+    candidates: list[dict[str, Any]] = []
+    occupied: set[int] = set()
+    # ponytail: 506 patterns are faster and simpler to scan than maintaining a phrase trie.
+    for pattern, rank in sorted(data["phrases"].items(), key=lambda item: len(item[0]), reverse=True):
+        if rank <= tier or len(pattern) > len(matches):
+            continue
+        for start in range(len(matches) - len(pattern) + 1):
+            indexes = range(start, start + len(pattern))
+            if occupied.intersection(indexes) or any(expected != "*" and expected != lemmas[index] for index, expected in zip(indexes, pattern)):
+                continue
+            candidates.append({
+                "start": matches[start].start(),
+                "end": matches[start + len(pattern) - 1].end(),
+                "rank": rank,
+                "kind": "phrase",
+            })
+            occupied.update(indexes)
+
+    for index, match in enumerate(matches):
+        word = match.group()
+        rank = data["words"].get(word.casefold())
+        if index in occupied or len(word.strip("'’")) < 2 or (rank is not None and rank <= tier):
+            continue
+        if word.isupper() or (word[0].isupper() and match.start() > 0 and plain[match.start() - 1] not in ".!?\n"):
+            continue
+        candidates.append({"start": match.start(), "end": match.end(), "rank": rank, "kind": "word"})
+
+    candidates.sort(key=lambda item: item["start"])
+    for candidate_id, candidate in enumerate(candidates):
+        candidate["id"] = candidate_id
+        candidate["text"] = plain[candidate["start"] : candidate["end"]]
+    return plain, candidates
+
+
+def ass_time(value: Any) -> str:
+    centiseconds = max(0, int(value.total_seconds() * 100))
+    minutes, seconds = divmod(centiseconds, 6000)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02}:{seconds // 100:02}.{seconds % 100:02}"
+
+
+def ass_text(value: str) -> str:
+    return value.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+
+
+def render_minimalistic_ass(subtitles: list[srt.Subtitle], glosses: dict[int, list[dict[str, Any]]]) -> str:
+    output = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1920",
+        "PlayResY: 1080",
+        "ScaledBorderAndShadow: yes",
+        "WrapStyle: 2",
+        "",
+        "[V4+ Styles]",
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
+        "Style: English,Courier New,48,&H00FFFFFF,&H000000FF,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,2,1,5,20,20,40,1",
+        "",
+        "[Events]",
+        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
+    ]
+    for cue_id, subtitle in enumerate(subtitles):
+        plain = plain_subtitle_text(subtitle.content)
+        if not plain:
+            continue
+        start, end = ass_time(subtitle.start), ass_time(subtitle.end)
+        font_size = max(18, min(48, int(1840 / (len(plain) * 0.6))))
+        x, y = round(960 - len(plain) * font_size * 0.3), 1010
+        output.append(f"Dialogue: 0,{start},{end},English,,0,0,0,,{{\\an4\\pos({x},{y})\\fs{font_size}}}{ass_text(plain)}")
+        for gloss in glosses.get(cue_id, []):
+            translation = gloss["translation"]
+            scale_x = max(1, round((gloss["end"] - gloss["start"]) * 60 / len(translation)))
+            copied_line = (
+                ass_text(plain[:gloss["start"]])
+                + f"{{\\alpha&H00&\\1c&H00B8E7FF&\\fscx{scale_x}\\fscy58}}{ass_text(translation)}"
+                + f"{{\\alpha&HFF&\\fscx100\\fscy100}}{ass_text(plain[gloss['end']:])}"
+            )
+            output.append(
+                f"Dialogue: 1,{start},{end},English,,0,0,0,,{{\\an4\\pos({x},{y - font_size})\\fs{font_size}\\alpha&HFF&}}{copied_line}"
+            )
+    return "\n".join(output) + "\n"
+
+
 def translate_srt(
     input_path: Path,
     output_path: Path,
@@ -815,6 +1033,7 @@ def translate_srt(
     *,
     target_language: str | None = None,
     subtitle_mode: str | None = None,
+    frequency: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     target_language = target_language or config.target_language
     subtitle_mode = subtitle_mode or config.default_subtitle_mode
@@ -822,29 +1041,63 @@ def translate_srt(
     indexed = list(enumerate(subtitles))
     if not indexed:
         raise PipelineError("Downloaded subtitle contains no cues")
+    usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
+    translations: dict[int, str] = {}
+    glosses: dict[int, list[dict[str, Any]]] = {}
+    candidates: dict[int, dict[int, dict[str, Any]]] = {}
+    work = indexed
+
+    if subtitle_mode == "minimalistic":
+        data = frequency or frequency_data()
+        work = []
+        for cue_id, subtitle in indexed:
+            _, cue_candidates = minimal_candidates(subtitle.content, data, config.minimal_frequency_tier)
+            if cue_candidates:
+                candidates[cue_id] = {candidate["id"]: candidate for candidate in cue_candidates}
+                work.append((cue_id, subtitle))
+        if not work:
+            output_path.write_text(render_minimalistic_ass(subtitles, {}), encoding="utf-8")
+            return usage
+
     client = client or OpenAI(
         api_key=config.openai_api_key,
         base_url=config.openai_base_url,
         max_retries=2,
         timeout=90,
     )
-    usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
-    translations: dict[int, str] = {}
 
-    for batch in batch_cues(indexed):
+    for batch in batch_cues(work):
         expected = {cue_id for cue_id, _ in batch}
-        payload = [{"id": cue_id, "text": cue.content} for cue_id, cue in batch]
+        if subtitle_mode == "minimalistic":
+            payload = [
+                {
+                    "id": cue_id,
+                    "text": plain_subtitle_text(cue.content),
+                    "candidates": [
+                        {"id": candidate["id"], "text": candidate["text"], "rank": candidate["rank"]}
+                        for candidate in candidates[cue_id].values()
+                    ],
+                }
+                for cue_id, cue in batch
+            ]
+        else:
+            payload = [{"id": cue_id, "text": cue.content} for cue_id, cue in batch]
         error: Exception | None = None
         for attempt in range(3):
             try:
                 completion = client.chat.completions.create(
                     model=config.openai_model_id,
                     messages=[
-                        {"role": "developer", "content": translation_instructions(target_language)},
+                        {
+                            "role": "developer",
+                            "content": minimalistic_instructions(target_language)
+                            if subtitle_mode == "minimalistic"
+                            else translation_instructions(target_language),
+                        },
                         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
                     ],
                     reasoning_effort=config.openai_reasoning_effort,
-                    response_format=translation_schema(),
+                    response_format=minimalistic_schema() if subtitle_mode == "minimalistic" else translation_schema(),
                     store=False,
                     max_completion_tokens=16_000,
                     n=1,
@@ -860,9 +1113,26 @@ def translate_srt(
                 if set(received) != expected or len(received) != len(expected):
                     raise ValueError("translation ids did not match the request")
                 for row in rows:
-                    if not isinstance(row.get("text"), str):
-                        raise ValueError("translation text was invalid")
-                    translations[row["id"]] = row["text"].strip()
+                    cue_id = row["id"]
+                    if subtitle_mode == "minimalistic":
+                        selected = row.get("glosses")
+                        if not isinstance(selected, list) or len(selected) > 3:
+                            raise ValueError("glosses were invalid")
+                        selected_ids = [item.get("candidate") for item in selected if isinstance(item, dict)]
+                        if len(selected_ids) != len(selected) or len(set(selected_ids)) != len(selected_ids):
+                            raise ValueError("gloss candidate ids were invalid")
+                        glosses[cue_id] = []
+                        for item in selected:
+                            candidate = candidates[cue_id].get(item["candidate"])
+                            if not candidate or not isinstance(item.get("text"), str):
+                                raise ValueError("gloss translation was invalid")
+                            translation = " ".join(item["text"].split())
+                            if translation:
+                                glosses[cue_id].append(candidate | {"translation": translation})
+                    else:
+                        if not isinstance(row.get("text"), str):
+                            raise ValueError("translation text was invalid")
+                        translations[cue_id] = row["text"].strip()
                 if completion.usage:
                     usage["promptTokens"] += completion.usage.prompt_tokens or 0
                     usage["completionTokens"] += completion.usage.completion_tokens or 0
@@ -876,11 +1146,14 @@ def translate_srt(
         if error:
             raise PipelineError("AI translation failed after three attempts") from error
 
-    for cue_id, subtitle in indexed:
-        translated = translations[cue_id]
-        if translated:
-            subtitle.content = translated if subtitle_mode == "target" else subtitle.content.rstrip() + "\n" + translated
-    output_path.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
+    if subtitle_mode == "minimalistic":
+        output_path.write_text(render_minimalistic_ass(subtitles, glosses), encoding="utf-8")
+    else:
+        for cue_id, subtitle in indexed:
+            translated = translations[cue_id]
+            if translated:
+                subtitle.content = translated if subtitle_mode == "target" else subtitle.content.rstrip() + "\n" + translated
+        output_path.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
     return usage
 
 
@@ -961,17 +1234,17 @@ def process_video(
 
     if english_sidecar:
         entry, subtitle_bytes = english_sidecar
-        output_path = language_output_path(relative, target_language, webdav.exists)
+        output_path = language_output_path(relative, target_language, webdav.exists, subtitle_mode)
         candidate = SubtitleCandidate(0, "en", f"Existing sidecar: {entry.name}", False)
         quota = {"remaining": None, "resetTimeUtc": None}
         source_suffix = PurePosixPath(entry.name).suffix.casefold()
         progress("downloading", "Using the existing English sidecar")
     else:
-        output_path = choose_output_path(relative, target_language, webdav.exists)
+        output_path = choose_output_path(relative, target_language, webdav.exists, subtitle_mode)
         progress("hashing", "Reading the first and last 64 KiB")
         moviehash = webdav.moviehash(relative, info.size or 0)
         progress("searching", "Finding an exact subtitle match")
-        languages = ("en",) if subtitle_mode == "bilingual" else (target_language, "en")
+        languages = ("en",) if subtitle_mode in {"bilingual", "minimalistic"} else (target_language, "en")
         candidate = opensubtitles.find(info.name, moviehash, languages)
         progress("downloading", f"Downloading {candidate.language} subtitle")
         subtitle_bytes, quota = opensubtitles.download(candidate)
@@ -981,7 +1254,7 @@ def process_video(
         temp = Path(temp_dir)
         source = temp / f"source{source_suffix}"
         synced = temp / "synced.srt"
-        final = temp / "final.srt"
+        final = temp / ("final.ass" if subtitle_mode == "minimalistic" else "final.srt")
         source.write_bytes(subtitle_bytes)
 
         if candidate.moviehash_match:
@@ -1049,6 +1322,7 @@ def update_job(job_id: str, item_index: int, stage: str, message: str) -> None:
     with JOBS_LOCK:
         job = JOBS[job_id]
         item = job.items[item_index]
+        item.started_at = item.started_at or time.time()
         item.status = stage
         item.message = message
         job.status = "running"
@@ -1108,6 +1382,9 @@ def run_job(job_id: str) -> None:
                     item.status = "completed"
                     item.message = "Existing target subtitle found" if result.get("existing") else "Subtitle created successfully"
                     item.result = result
+            finally:
+                with JOBS_LOCK:
+                    JOBS[job_id].items[index].finished_at = time.time()
 
         with JOBS_LOCK:
             job = JOBS[job_id]
@@ -1128,7 +1405,14 @@ def run_job(job_id: str) -> None:
                 job.error = "Unexpected internal error"
 
 
-app = FastAPI(title="Subtitle Maker", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    loader = asyncio.create_task(asyncio.to_thread(load_frequency_data))
+    yield
+    await loader
+
+
+app = FastAPI(title="Subtitle Maker", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],

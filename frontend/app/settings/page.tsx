@@ -21,6 +21,11 @@ const SECTIONS: { title: string; fields: SettingField[] }[] = [
     fields: [
       { name: "target_language", label: "Target language", optionKey: "target_languages" },
       { name: "default_subtitle_mode", label: "Default mode", optionKey: "subtitle_modes" },
+      {
+        name: "minimal_frequency_tier",
+        label: "Minimalistic frequency cutoff",
+        options: [1, 2, 3, 4, 5].map((tier) => ({ value: `${tier * 1000}`, label: `Beyond top ${tier}K` })),
+      },
     ],
   },
   {

@@ -26,6 +26,8 @@ type JobItem = {
   message: string;
   error?: string | null;
   result?: JobResult | null;
+  started_at?: number | null;
+  finished_at?: number | null;
 };
 
 type Job = {
@@ -70,6 +72,12 @@ function formatSize(bytes?: number | null) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
+}
+
+function formatElapsed({ started_at, finished_at }: JobItem) {
+  if (started_at == null) return "—";
+  const seconds = Math.max(0, Math.floor((finished_at ?? Date.now() / 1000) - started_at));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 export default function Home() {
@@ -230,7 +238,7 @@ export default function Home() {
                   <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
                   <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
                 </div>
-                <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+                <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")} · {formatElapsed(item)}</span>
               </div>
             ))}
           </div>
