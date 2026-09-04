@@ -7,9 +7,72 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from backend.embedded_subtitles import probe_embedded_subtitles
+
 
 @unittest.skipUnless(os.getenv("RUN_MEDIA_INTEGRATION") == "1", "set RUN_MEDIA_INTEGRATION=1 for FFmpeg/ffsubsync smoke test")
 class MediaIntegrationTest(unittest.TestCase):
+    def test_reads_embedded_languages_from_real_mp4_and_matroska_files(self):
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.skipTest("FFmpeg is required")
+
+        with tempfile.TemporaryDirectory(prefix="subtitle-metadata-test-") as directory:
+            root = Path(directory)
+            subtitle = root / "fixture.srt"
+            subtitle.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nTest dialogue\n\n",
+                encoding="utf-8",
+            )
+            for suffix, subtitle_codec in (("mp4", "mov_text"), ("mkv", "srt")):
+                video = root / f"fixture.{suffix}"
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "color=c=black:s=320x180:r=10:d=2",
+                        "-i",
+                        str(subtitle),
+                        "-map",
+                        "0:v",
+                        "-map",
+                        "1:s",
+                        "-map",
+                        "1:s",
+                        "-c:v",
+                        "mpeg4",
+                        "-c:s",
+                        subtitle_codec,
+                        "-metadata:s:s:0",
+                        "language=eng",
+                        "-metadata:s:s:1",
+                        "language=fra",
+                        "-shortest",
+                        str(video),
+                    ],
+                    check=True,
+                )
+                ranges = []
+
+                def read_range(start, end, _timeout):
+                    ranges.append((start, end))
+                    with video.open("rb") as media:
+                        media.seek(start)
+                        return media.read(end - start + 1)
+
+                result = probe_embedded_subtitles(video.name, video.stat().st_size, read_range)
+
+                self.assertEqual(result.status, "available")
+                self.assertEqual(result.languages, ("eng", "fra"))
+                self.assertTrue(all(end - start + 1 <= 256 * 1024 for start, end in ranges))
+                self.assertLessEqual(sum(end - start + 1 for start, end in ranges), 8 * 1024 * 1024)
+
     def test_shifted_fixture_through_range_server(self):
         ffmpeg = shutil.which("ffmpeg")
         ffsubsync = shutil.which("ffsubsync")

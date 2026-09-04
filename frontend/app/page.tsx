@@ -19,6 +19,11 @@ import {
   X,
 } from "lucide-react";
 import { AppHeader } from "./AppHeader";
+import {
+  fetchEmbeddedSubtitleStream,
+  shouldShowLanguageDash,
+  type EmbeddedSubtitleCellState,
+} from "./embeddedSubtitles";
 import { filterAndSortEntries, type EntrySort } from "./fileEntries";
 import { getSubtitleLanguage } from "./subtitleLanguages";
 import { formatSubtitleModeLabel } from "./subtitleOptions";
@@ -86,11 +91,11 @@ type SettingsResponse = {
   options: { target_languages: Option[]; subtitle_modes: Option[] };
 };
 type DirectoryLoadOptions = { refresh?: boolean; resetView?: boolean };
+type MetadataLoad = { generation: number; path: string; refresh: boolean; videoPaths: string[] };
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TERMINAL = new Set(["completed", "failed"]);
 const FILE_LIST_SKELETON_ROWS = 10;
-
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     ...init,
@@ -125,9 +130,13 @@ function formatElapsedTime(startedAt?: number | null, finishedAt?: number | null
 export default function Home() {
   const renameDialog = useRef<HTMLDialogElement>(null);
   const jobsDock = useRef<HTMLDivElement>(null);
+  const metadataAbort = useRef<AbortController>(null);
+  const metadataGeneration = useRef(0);
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [embeddedMetadata, setEmbeddedMetadata] = useState<Record<string, EmbeddedSubtitleCellState>>({});
+  const [metadataLoad, setMetadataLoad] = useState<MetadataLoad | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<EntrySort>({ key: "modified", direction: "desc" });
   const [languageColumnCollapsed, setLanguageColumnCollapsed] = useState(false);
@@ -146,11 +155,13 @@ export default function Home() {
   const [renameTitle, setRenameTitle] = useState("");
   const [renameError, setRenameError] = useState("");
   const [error, setError] = useState("");
-
   const loadDirectory = useCallback(async (
     nextPath: string,
     { refresh = false, resetView = true }: DirectoryLoadOptions = {},
   ) => {
+    const generation = ++metadataGeneration.current;
+    metadataAbort.current?.abort();
+    setMetadataLoad(null);
     if (refresh) setRefreshing(true);
     else setLoading(true);
     setError("");
@@ -162,15 +173,65 @@ export default function Home() {
       const data = await api<{ path: string; entries: FileEntry[] }>(
         `/api/files?path=${encodeURIComponent(nextPath)}${refresh ? "&refresh=true" : ""}`,
       );
+      if (metadataGeneration.current !== generation) return;
+      const videoPaths = data.entries
+        .filter((entry) => entry.type === "video")
+        .map((entry) => entry.path);
       setPath(data.path);
       setEntries(data.entries);
+      setEmbeddedMetadata(Object.fromEntries(videoPaths.map((videoPath) => [videoPath, { status: "loading" }])));
+      setMetadataLoad({ generation, path: data.path, refresh, videoPaths });
     } catch (reason) {
+      if (metadataGeneration.current !== generation) return;
       setError(reason instanceof Error ? reason.message : "Could not load this directory");
     } finally {
-      if (refresh) setRefreshing(false);
-      else setLoading(false);
+      if (metadataGeneration.current === generation) {
+        if (refresh) setRefreshing(false);
+        else setLoading(false);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    if (!metadataLoad) return;
+    const controller = new AbortController();
+    const videoPaths = new Set(metadataLoad.videoPaths);
+    metadataAbort.current = controller;
+
+    const finishPending = () => {
+      if (metadataGeneration.current !== metadataLoad.generation) return;
+      setEmbeddedMetadata((current) => Object.fromEntries(Object.entries(current).map(([videoPath, value]) => [
+        videoPath,
+        value.status === "loading"
+          ? { path: videoPath, status: "unavailable", languages: [] }
+          : value,
+      ])));
+    };
+
+    const timer = window.setTimeout(() => {
+      const query = new URLSearchParams({ path: metadataLoad.path });
+      if (metadataLoad.refresh) query.set("refresh", "true");
+      void fetchEmbeddedSubtitleStream(
+        `${API}/api/files/embedded-subtitles?${query}`,
+        controller.signal,
+        (metadata) => {
+          if (
+            metadataGeneration.current !== metadataLoad.generation
+            || !videoPaths.has(metadata.path)
+          ) return;
+          setEmbeddedMetadata((current) => ({ ...current, [metadata.path]: metadata }));
+        },
+      ).then(finishPending).catch((reason: unknown) => {
+        if ((reason as Error)?.name !== "AbortError") finishPending();
+      });
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+      if (metadataAbort.current === controller) metadataAbort.current = null;
+    };
+  }, [metadataLoad]);
 
   useEffect(() => {
     api<Health>("/api/health")
@@ -528,7 +589,10 @@ export default function Home() {
             <button type="button" className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
               <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span><span className="languageCell" aria-hidden="true">—</span>
             </button>
-          ) : (
+          ) : (() => {
+            const embedded = embeddedMetadata[entry.path];
+            const sidecars = entry.subtitles ?? [];
+            return (
             <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
               <span className="name">
                 <span className="checkboxWrap">
@@ -548,23 +612,42 @@ export default function Home() {
               <span>{formatSize(entry.size)}</span>
               <span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
               <span className="languageCell" aria-hidden={languageColumnCollapsed}>
-                {entry.subtitles?.length ? entry.subtitles.map((subtitle) => {
+                {sidecars.map((subtitle) => {
                   const language = getSubtitleLanguage(subtitle.language);
                   return (
                     <span
                       className="languageFlag"
                       role="img"
-                      aria-label={`${language.label} subtitle`}
-                      title={`${language.label} · ${subtitle.name}`}
+                      aria-label={`${language.label} sidecar subtitle`}
+                      title={`${language.label} · Sidecar · ${subtitle.name}`}
                       key={subtitle.path}
                     >
                       {language.flag}
                     </span>
                   );
-                }) : <span aria-label="No sidecar subtitle">—</span>}
+                })}
+                {embedded?.status === "loading" && (
+                  <span className="skeleton languageProbeSkeleton" role="status" aria-label="Loading embedded subtitle languages" />
+                )}
+                {embedded?.status === "available" && embedded.languages.map((code, index) => {
+                  const language = getSubtitleLanguage(code);
+                  return (
+                    <span
+                      className="languageFlag"
+                      role="img"
+                      aria-label={`${language.label} embedded subtitle`}
+                      title={`${language.label} · Embedded subtitle`}
+                      key={`embedded-${index}`}
+                    >
+                      {language.flag}
+                    </span>
+                  );
+                })}
+                {shouldShowLanguageDash(sidecars.length, embedded) && <span aria-label="No subtitle language available">—</span>}
               </span>
             </label>
-          ))}
+            );
+          })())}
         </div>
 
         <div className="actions">

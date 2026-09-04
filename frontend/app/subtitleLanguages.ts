@@ -4,15 +4,17 @@ export type SubtitleLanguage = {
 };
 
 const SUBTITLE_LANGUAGES: Record<string, SubtitleLanguage> = {
-  "zh-cn": { flag: "🇨🇳", label: "Simplified Chinese" },
-  "zh-tw": { flag: "🇹🇼", label: "Traditional Chinese" },
+  "zh-CN": { flag: "🇨🇳", label: "Simplified Chinese" },
+  "zh-Hans": { flag: "🇨🇳", label: "Simplified Chinese" },
+  "zh-TW": { flag: "🇹🇼", label: "Traditional Chinese" },
+  "zh-Hant": { flag: "🇹🇼", label: "Traditional Chinese" },
   en: { flag: "🇬🇧", label: "English" },
   es: { flag: "🇪🇸", label: "Spanish" },
   fr: { flag: "🇫🇷", label: "French" },
   de: { flag: "🇩🇪", label: "German" },
   ja: { flag: "🇯🇵", label: "Japanese" },
   ko: { flag: "🇰🇷", label: "Korean" },
-  "pt-br": { flag: "🇧🇷", label: "Brazilian Portuguese" },
+  "pt-BR": { flag: "🇧🇷", label: "Brazilian Portuguese" },
   it: { flag: "🇮🇹", label: "Italian" },
   ru: { flag: "🇷🇺", label: "Russian" },
   ar: { flag: "🇸🇦", label: "Arabic" },
@@ -27,6 +29,24 @@ const SUBTITLE_LANGUAGES: Record<string, SubtitleLanguage> = {
   cs: { flag: "🇨🇿", label: "Czech" },
 };
 
+const DISPLAY_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
+
+export function normalizeSubtitleLanguage(code?: string | null): string | null {
+  if (!code) return null;
+  const candidate = code.trim().replaceAll("_", "-");
+  if (!candidate || candidate.toLowerCase() === "und") return null;
+  try {
+    return new Intl.Locale(candidate).toString();
+  } catch {
+    return null;
+  }
+}
+
 export function getSubtitleLanguage(code?: string | null): SubtitleLanguage {
-  return code ? SUBTITLE_LANGUAGES[code] ?? { flag: "🏳️", label: code } : { flag: "🏳️", label: "Unknown language" };
+  const normalized = normalizeSubtitleLanguage(code);
+  if (!normalized) return { flag: "🏳️", label: "Unknown language" };
+  return SUBTITLE_LANGUAGES[normalized] ?? {
+    flag: "🏳️",
+    label: DISPLAY_NAMES.of(normalized) ?? normalized,
+  };
 }
