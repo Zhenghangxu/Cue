@@ -1,0 +1,142 @@
+{
+  "appName": "Subtitle Maker",
+  "meta": {
+    "description": "Create and synchronize multilingual subtitles from your video library"
+  },
+  "language": {
+    "label": "Language"
+  },
+  "header": {
+    "settingsTitle": "Settings",
+    "homeDescription": "Find, synchronize, and translate subtitles without downloading the full video.",
+    "settingsDescription": "Configure subtitle sources, models, and local credentials.",
+    "media": "Media",
+    "settings": "Settings"
+  },
+  "theme": {
+    "switchToLight": "Switch to light mode",
+    "switchToDark": "Switch to dark mode"
+  },
+  "home": {
+    "errors": {
+      "loadDirectory": "Could not load this directory",
+      "backendUnavailable": "Backend is unavailable",
+      "loadSubtitleSettings": "Could not load subtitle settings",
+      "startJob": "Could not start the job",
+      "renameVideos": "Could not rename the selected videos"
+    },
+    "jobs": {
+      "waiting": "Waiting to start",
+      "button": "Jobs, {{total}} total",
+      "buttonActive": "Jobs, {{total}} total, {{active}} active",
+      "title": "Jobs",
+      "queueLabel": "Job queue",
+      "done": "done",
+      "failed": "failed",
+      "active_one": "{{count}} active",
+      "active_other": "{{count}} active",
+      "allFinished": "All finished",
+      "none": "No jobs",
+      "clearFinished": "Clear finished jobs from this list only",
+      "clearHint": "Only clears UI",
+      "empty": "No jobs have been created yet.",
+      "elapsed": "Elapsed time {{time}}"
+    },
+    "actions": {
+      "aiNaming": "AI-powered video naming",
+      "loadingOptions": "Loading subtitle options…",
+      "renameFilesCount": "Rename files ({{count}})",
+      "addToQueue": "Add to queue ({{count}})",
+      "createSubtitles": "Create subtitles ({{count}})",
+      "choose": "Choose subtitle action",
+      "smartRename": "Smart rename"
+    },
+    "refresh": "Refresh media",
+    "refreshing": "Refreshing media",
+    "setup": {
+      "incomplete": "Backend setup is incomplete.",
+      "ffmpegMissing": "FFmpeg is missing.",
+      "ffsubsyncMissing": "Run this command to install ffsubsync:"
+    },
+    "browserLabel": "{{source}} video browser",
+    "local": "Local",
+    "localLower": "local",
+    "directoryPath": "Directory path",
+    "searchFolder": "Search this folder",
+    "videos": "Videos",
+    "sortBy": "Sort by {{field}}{{current}}",
+    "sort": {
+      "asc": ", currently ascending",
+      "desc": ", currently descending"
+    },
+    "columns": {
+      "name": "Name",
+      "size": "Size",
+      "date": "Date",
+      "language": "Language"
+    },
+    "showLanguage": "Show language column",
+    "hideLanguage": "Hide language column",
+    "loadingDirectory": "Loading this directory",
+    "emptyFolder": "No supported videos or folders here.",
+    "noMatches": "No matches in this folder.",
+    "folder": "Folder",
+    "subtitleLabel": "{{language}} subtitle",
+    "noSidecarSubtitle": "No sidecar subtitle",
+    "usage": {
+      "title": "Usage",
+      "aiTokens": "AI tokens",
+      "subtitlesRemaining": "subtitles remaining"
+    },
+    "rename": {
+      "eyebrow": "SMART RENAME",
+      "title_one": "Name {{count}} selected video",
+      "title_other": "Name {{count}} selected videos",
+      "close": "Close smart rename",
+      "englishTitle": "English title",
+      "placeholder": "e.g. Game of Thrones",
+      "help": "The AI will keep episode, year, quality, and extension details when they are present.",
+      "cancel": "Cancel",
+      "renaming": "Renaming…",
+      "renameFiles": "Rename files"
+    },
+    "footer": "Only files inside the configured {{source}} scan path are visible to this app."
+  },
+  "settings": {
+    "loadError": "Could not load settings",
+    "saveError": "Could not save settings",
+    "configuration": "Configuration",
+    "credentialsNotice": "Credentials are stored in config.json and are never sent back to this page.",
+    "optional": "Optional",
+    "secretStored": "Stored in config.json",
+    "clearField": "Clear {{field}}",
+    "clear": "Clear",
+    "loading": "Loading settings…",
+    "saving": "Saving…",
+    "save": "Save settings",
+    "sections": {
+      "storage": "Storage",
+      "subtitles": "Subtitles",
+      "webdav": "WebDAV",
+      "openSubtitles": "OpenSubtitles",
+      "openAI": "OpenAI"
+    },
+    "fields": {
+      "mediaSource": "Media source",
+      "saveSubtitles": "Save subtitles",
+      "scanPath": "Scan path",
+      "outputFolder": "Output folder",
+      "targetLanguage": "Target language",
+      "defaultMode": "Default mode",
+      "username": "Username",
+      "password": "Password",
+      "endpoint": "Endpoint",
+      "apiKey": "API key",
+      "consumerName": "Consumer name",
+      "baseUrl": "Base URL",
+      "model": "Model",
+      "subtitleReasoningEffort": "Subtitle reasoning effort",
+      "renameReasoningEffort": "Rename reasoning effort"
+    }
+  }
+}

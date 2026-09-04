@@ -2,9 +2,10 @@
 
 import { type FormEvent, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
-import { AppHeader } from "../AppHeader";
-import { NativeSelect } from "../NativeSelect";
-import { formatSubtitleModeLabel } from "../subtitleOptions";
+import { useT } from "next-i18next/client";
+import { AppHeader } from "./AppHeader";
+import { NativeSelect } from "./NativeSelect";
+import { formatSubtitleModeLabel } from "./subtitleOptions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 type Option = { value: string; label: string };
@@ -16,7 +17,7 @@ type SettingsOptions = {
 };
 type SettingField = {
   name: string;
-  label: string;
+  labelKey: string;
   separatorBefore?: boolean;
   secret?: boolean;
   optional?: boolean;
@@ -24,55 +25,55 @@ type SettingField = {
   options?: Option[];
   optionKey?: keyof SettingsOptions;
 };
-const SECTIONS: { title: string; fields: SettingField[] }[] = [
+const SECTIONS: { titleKey: string; fields: SettingField[] }[] = [
   {
-    title: "Storage",
+    titleKey: "storage",
     fields: [
-      { name: "source_type", label: "Media source", optionKey: "source_types" },
-      { name: "subtitle_destination", label: "Save subtitles", optionKey: "subtitle_destinations" },
-      { name: "local_scan_path", label: "Scan path", separatorBefore: true },
-      { name: "local_output_path", label: "Output folder", separatorBefore: true },
+      { name: "source_type", labelKey: "mediaSource", optionKey: "source_types" },
+      { name: "subtitle_destination", labelKey: "saveSubtitles", optionKey: "subtitle_destinations" },
+      { name: "local_scan_path", labelKey: "scanPath", separatorBefore: true },
+      { name: "local_output_path", labelKey: "outputFolder", separatorBefore: true },
     ],
   },
   {
-    title: "Subtitles",
+    titleKey: "subtitles",
     fields: [
-      { name: "target_language", label: "Target language", optionKey: "target_languages" },
-      { name: "default_subtitle_mode", label: "Default mode", optionKey: "subtitle_modes" },
+      { name: "target_language", labelKey: "targetLanguage", optionKey: "target_languages" },
+      { name: "default_subtitle_mode", labelKey: "defaultMode", optionKey: "subtitle_modes" },
     ],
   },
   {
-    title: "WebDAV",
+    titleKey: "webdav",
     fields: [
-      { name: "webdav_username", label: "Username" },
-      { name: "webdav_password", label: "Password", secret: true },
-      { name: "webdav_endpoint", label: "Endpoint" },
-      { name: "webdav_scan_path", label: "Scan path" },
+      { name: "webdav_username", labelKey: "username" },
+      { name: "webdav_password", labelKey: "password", secret: true },
+      { name: "webdav_endpoint", labelKey: "endpoint" },
+      { name: "webdav_scan_path", labelKey: "scanPath" },
     ],
   },
   {
-    title: "OpenSubtitles",
+    titleKey: "openSubtitles",
     fields: [
-      { name: "opensubtitles_api_key", label: "API key", secret: true },
-      { name: "opensubtitles_consumer_name", label: "Consumer name" },
-      { name: "opensubtitles_username", label: "Username", optional: true },
-      { name: "opensubtitles_password", label: "Password", secret: true, optional: true },
+      { name: "opensubtitles_api_key", labelKey: "apiKey", secret: true },
+      { name: "opensubtitles_consumer_name", labelKey: "consumerName" },
+      { name: "opensubtitles_username", labelKey: "username", optional: true },
+      { name: "opensubtitles_password", labelKey: "password", secret: true, optional: true },
     ],
   },
   {
-    title: "OpenAI",
+    titleKey: "openAI",
     fields: [
-      { name: "openai_base_url", label: "Base URL", type: "url" },
-      { name: "openai_api_key", label: "API key", secret: true },
-      { name: "openai_model_id", label: "Model" },
+      { name: "openai_base_url", labelKey: "baseUrl", type: "url" },
+      { name: "openai_api_key", labelKey: "apiKey", secret: true },
+      { name: "openai_model_id", labelKey: "model" },
       {
         name: "openai_reasoning_effort",
-        label: "Subtitle reasoning effort",
+        labelKey: "subtitleReasoningEffort",
         options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })),
       },
       {
         name: "openai_rename_reasoning_effort",
-        label: "Rename reasoning effort",
+        labelKey: "renameReasoningEffort",
         options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })),
       },
     ],
@@ -94,7 +95,8 @@ type SettingsResponse = {
   options: SettingsOptions;
 };
 
-export default function Settings() {
+export function Settings() {
+  const { t } = useT("common");
   const [values, setValues] = useState<Record<string, string>>({});
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
   const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({});
@@ -116,15 +118,15 @@ export default function Settings() {
     fetch(`${API}/api/settings`)
       .then(async (response) => {
         const body = await response.json();
-        if (!response.ok) throw new Error(body.detail || "Could not load settings");
+        if (!response.ok) throw new Error(body.detail || t("settings.loadError"));
         const settings = body as SettingsResponse;
         setValues(settings.values);
         setStoredSecrets(settings.secrets);
         setOptions(settings.options);
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load settings"))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : t("settings.loadError")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -138,7 +140,7 @@ export default function Settings() {
         body: JSON.stringify({ values, secrets: secretValues, clear_secrets: clearSecrets }),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || "Could not save settings");
+      if (!response.ok) throw new Error(body.detail || t("settings.saveError"));
       setStoredSecrets((current) => {
         const next = { ...current };
         for (const [key, value] of Object.entries(secretValues)) if (value) next[key] = true;
@@ -149,7 +151,7 @@ export default function Settings() {
       setClearSecrets([]);
       setMessage(body.message);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save settings");
+      setError(reason instanceof Error ? reason.message : t("settings.saveError"));
     } finally {
       setSaving(false);
     }
@@ -161,18 +163,21 @@ export default function Settings() {
 
       <form className="settingsCard" onSubmit={save}>
         <div className="settingsIntro">
-          <h2>Configuration</h2>
-          <span>Credentials are stored in config.json and are never sent back to this page.</span>
+          <h2>{t("settings.configuration")}</h2>
+          <span>{t("settings.credentialsNotice")}</span>
         </div>
         <div className="settingsGrid">
           {SECTIONS.map((section) => {
             const fields = section.fields.filter((field) => fieldIsVisible(field, values));
             if (!fields.length) return null;
-            return <fieldset key={section.title}>
-              <legend>{section.title}</legend>
+            return <fieldset key={section.titleKey}>
+              <legend>{t(`settings.sections.${section.titleKey}`)}</legend>
               {fields.map((field) => (
                 <div className={`settingField${field.separatorBefore ? " settingFieldSeparated" : ""}`} key={field.name}>
-                  <label htmlFor={field.name}>{field.label}{field.optional && <small>Optional</small>}</label>
+                  <label htmlFor={field.name}>
+                    {t(`settings.fields.${field.labelKey}`)}
+                    {field.optional && <small>{t("settings.optional")}</small>}
+                  </label>
                   {field.options || field.optionKey ? (
                     <NativeSelect
                       id={field.name}
@@ -203,7 +208,7 @@ export default function Settings() {
                       id={field.name}
                       type={field.secret ? "password" : field.type ?? "text"}
                       value={field.secret ? secretValues[field.name] ?? "" : values[field.name] ?? ""}
-                      placeholder={field.secret && storedSecrets[field.name] ? "Stored in config.json" : ""}
+                      placeholder={field.secret && storedSecrets[field.name] ? t("settings.secretStored") : ""}
                       onChange={(event) => field.secret
                         ? (setSecretValues((current) => ({ ...current, [field.name]: event.target.value })),
                           setClearSecrets((current) => current.filter((name) => name !== field.name)))
@@ -215,15 +220,15 @@ export default function Settings() {
                   )}
                   {field.secret && storedSecrets[field.name] && (
                     <span className="secretState">
-                      Stored in config.json
+                      {t("settings.secretStored")}
                       <span><input
                         type="checkbox"
-                        aria-label={`Clear ${field.label}`}
+                        aria-label={t("settings.clearField", { field: t(`settings.fields.${field.labelKey}`) })}
                         checked={clearSecrets.includes(field.name)}
                         onChange={(event) => setClearSecrets((current) => event.target.checked
                           ? [...current, field.name]
                           : current.filter((name) => name !== field.name))}
-                      /> Clear</span>
+                      /> {t("settings.clear")}</span>
                     </span>
                   )}
                 </div>
@@ -233,12 +238,12 @@ export default function Settings() {
         </div>
         <div className="settingsActions">
           <div aria-live="polite">
-            {loading && <span>Loading settings…</span>}
+            {loading && <span>{t("settings.loading")}</span>}
             {message && <span className="success">{message}</span>}
             {error && <span className="settingsError" role="alert">{error}</span>}
           </div>
           <button className="start" type="submit" disabled={loading || saving}>
-            {saving ? "Saving…" : "Save settings"}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
+            {saving ? t("settings.saving") : t("settings.save")}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
       </form>

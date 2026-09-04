@@ -26,6 +26,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useT } from "next-i18next/client";
 import { AppHeader } from "./AppHeader";
 import {
   accumulateAiUsage,
@@ -162,7 +163,8 @@ function formatElapsedTime(startedAt?: number | null, finishedAt?: number | null
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-export default function Home() {
+export function Home() {
+  const { t, i18n } = useT("common");
   const renameDialog = useRef<HTMLDialogElement>(null);
   const jobsDock = useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<Health | null>(null);
@@ -210,12 +212,12 @@ export default function Home() {
       setPath(data.path);
       setEntries(data.entries);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not load this directory");
+      setError(reason instanceof Error ? reason.message : t("home.errors.loadDirectory"));
     } finally {
       if (refresh) setRefreshing(false);
       else setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     api<Health>("/api/health")
@@ -229,7 +231,7 @@ export default function Home() {
         } else setLoading(false);
       })
       .catch((reason) => {
-        setError(reason instanceof Error ? reason.message : "Backend is unavailable");
+        setError(reason instanceof Error ? reason.message : t("home.errors.backendUnavailable"));
         setLoading(false);
       });
 
@@ -245,14 +247,14 @@ export default function Home() {
           setSubtitleMode(values.default_subtitle_mode);
         }
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load subtitle settings"));
+      .catch((reason) => setError(reason instanceof Error ? reason.message : t("home.errors.loadSubtitleSettings")));
 
     const remembered = (sessionStorage.getItem("subtitle-maker-jobs")
       ?? sessionStorage.getItem("subtitle-maker-job")
       ?? "").split(",").filter(Boolean);
     if (remembered.length) Promise.all(remembered.map((id) => api<Job>(`/api/jobs/${id}`).catch(() => null)))
       .then((values) => setJobs(values.filter((value): value is Job => Boolean(value))));
-  }, [loadDirectory]);
+  }, [loadDirectory, t]);
 
   useEffect(() => {
     const active = jobs.filter((job) => !TERMINAL.has(job.status));
@@ -296,10 +298,10 @@ export default function Home() {
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
     return [
-      { name: "Media", path: "" },
+      { name: t("header.media"), path: "" },
       ...parts.map((name, index) => ({ name, path: parts.slice(0, index + 1).join("/") })),
     ];
-  }, [path]);
+  }, [path, t]);
 
   const visibleEntries = useMemo(
     () => filterAndSortEntries(entries, query, sort),
@@ -343,15 +345,15 @@ export default function Home() {
       const queued = {
         id: value.jobId,
         status: "queued",
-        message: "Waiting to start",
+        message: t("home.jobs.waiting"),
         created_at: Date.now() / 1000,
         subtitle_mode: subtitleMode,
-        items: selectedPaths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
+        items: selectedPaths.map((path) => ({ path, status: "queued", message: t("home.jobs.waiting") })),
       };
       queueJob(queued);
       setSelected([]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not start the job");
+      setError(reason instanceof Error ? reason.message : t("home.errors.startJob"));
     }
   }
 
@@ -370,13 +372,13 @@ export default function Home() {
         id: value.jobId,
         kind: "rename",
         status: "queued",
-        message: "Waiting to start",
+        message: t("home.jobs.waiting"),
         created_at: Date.now() / 1000,
-        items: selectedPaths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
+        items: selectedPaths.map((path) => ({ path, status: "queued", message: t("home.jobs.waiting") })),
       });
       setSelected([]);
     } catch (reason) {
-      setRenameError(reason instanceof Error ? reason.message : "Could not rename the selected videos");
+      setRenameError(reason instanceof Error ? reason.message : t("home.errors.renameVideos"));
     } finally {
       setRenaming(false);
     }
@@ -396,10 +398,10 @@ export default function Home() {
   );
   const selectedSubtitleMode = subtitleModes.find(({ value }) => value === subtitleMode);
   const actionModeLabel = actionMode === "rename"
-    ? "AI-powered video naming"
+    ? t("home.actions.aiNaming")
     : selectedSubtitleMode
       ? formatSubtitleModeLabel(selectedSubtitleMode.label, targetLanguageName)
-      : "Loading subtitle options…";
+      : t("home.actions.loadingOptions");
 
   useEffect(() => {
     if (!busy) return;
@@ -416,25 +418,27 @@ export default function Home() {
             type="button"
             onClick={() => setQueueMinimized((current) => !current)}
             aria-label={busy
-              ? `Jobs, ${jobs.length} total, ${pendingItems.length} active`
-              : `Jobs, ${jobs.length} total`}
+              ? t("home.jobs.buttonActive", { total: jobs.length, active: pendingItems.length })
+              : t("home.jobs.button", { total: jobs.length })}
             aria-expanded={!queueMinimized}
             aria-controls="job-queue"
           >
             {busy
               ? <LoaderCircle className="spinner" size={16} strokeWidth={1.75} aria-hidden="true" />
               : <ListTodo size={16} strokeWidth={1.75} aria-hidden="true" />}
-            <span>Jobs</span>
+            <span>{t("home.jobs.title")}</span>
             <span className="jobsBadge" aria-hidden="true">{pendingItems.length}</span>
           </button>
 
           {!queueMinimized && (
-            <aside id="job-queue" className="queue" aria-live="polite" aria-label="Job queue">
+            <aside id="job-queue" className="queue" aria-live="polite" aria-label={t("home.jobs.queueLabel")}>
               <div className="queueHeader">
                 <div className="queueSummary">
                   {busy && <LoaderCircle className="spinner" size={16} strokeWidth={1.75} aria-hidden="true" />}
-                  <span><strong>{completed}</strong> done · <strong>{failed}</strong> failed</span>
-                  <b>{busy ? `${pendingItems.length} active` : items.length ? "All finished" : "No jobs"}</b>
+                  <span><strong>{completed}</strong> {t("home.jobs.done")} · <strong>{failed}</strong> {t("home.jobs.failed")}</span>
+                  <b>{busy
+                    ? t("home.jobs.active", { count: pendingItems.length })
+                    : items.length ? t("home.jobs.allFinished") : t("home.jobs.none")}</b>
                 </div>
                 <div className="queueControls">
                   <button
@@ -442,18 +446,18 @@ export default function Home() {
                     type="button"
                     onClick={clearFinishedJobs}
                     disabled={!jobs.some((job) => TERMINAL.has(job.status))}
-                    aria-label="Clear finished jobs from this list only"
+                    aria-label={t("home.jobs.clearFinished")}
                     aria-describedby="clear-jobs-tooltip"
                   >
                     <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
                     <span className="queueTooltip" id="clear-jobs-tooltip" role="tooltip">
-                      Only clears UI
+                      {t("home.jobs.clearHint")}
                     </span>
                   </button>
                 </div>
               </div>
               <div className="queueItems">
-                {items.length === 0 && <div className="queueEmpty">No jobs have been created yet.</div>}
+                {items.length === 0 && <div className="queueEmpty">{t("home.jobs.empty")}</div>}
                 {jobs.flatMap((job) => job.items.map((item, index) => {
                   const elapsedTime = formatElapsedTime(item.started_at, item.finished_at);
                   return (
@@ -462,7 +466,7 @@ export default function Home() {
                         <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
                         <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
                       </div>
-                      <span className="queueTimer" role="timer" aria-label={`Elapsed time ${elapsedTime}`}>
+                      <span className="queueTimer" role="timer" aria-label={t("home.jobs.elapsed", { time: elapsedTime })}>
                         {elapsedTime}
                       </span>
                       <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
@@ -479,8 +483,8 @@ export default function Home() {
           type="button"
           onClick={() => void loadDirectory(path, { refresh: true, resetView: false })}
           disabled={loading || refreshing || !health?.ready}
-          aria-label={refreshing ? "Refreshing media" : "Refresh media"}
-          title={refreshing ? "Refreshing media" : "Refresh media"}
+          aria-label={refreshing ? t("home.refreshing") : t("home.refresh")}
+          title={refreshing ? t("home.refreshing") : t("home.refresh")}
         >
           <RefreshCw className={refreshing ? "spinner" : undefined} size={16} strokeWidth={1.75} aria-hidden="true" />
         </button>
@@ -488,15 +492,15 @@ export default function Home() {
 
       {health && !health.ready && (
         <section className="notice" role="alert">
-          <strong>Backend setup is incomplete.</strong>
+          <strong>{t("home.setup.incomplete")}</strong>
           <span>{health.configuration}</span>
-          {!health.binaries.ffmpeg && <span>FFmpeg is missing.</span>}
-          {!health.binaries.ffsubsync && <span>Run <code>uv sync</code> to install ffsubsync.</span>}
+          {!health.binaries.ffmpeg && <span>{t("home.setup.ffmpegMissing")}</span>}
+          {!health.binaries.ffsubsync && <span>{t("home.setup.ffsubsyncMissing")} <code>uv sync</code>.</span>}
         </section>
       )}
 
-      <section className="workspace" aria-label={`${sourceType === "local" ? "Local" : "WebDAV"} video browser`}>
-        <nav className="breadcrumbs" aria-label="Directory path">
+      <section className="workspace" aria-label={t("home.browserLabel", { source: sourceType === "local" ? t("home.local") : "WebDAV" })}>
+        <nav className="breadcrumbs" aria-label={t("home.directoryPath")}>
           {crumbs.map((crumb, index) => (
             <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
               {index > 0 && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
@@ -518,33 +522,39 @@ export default function Home() {
             <Search size={16} strokeWidth={1.75} aria-hidden="true" />
             <input
               type="search"
-              aria-label="Search this folder"
-              placeholder="Search this folder"
+              aria-label={t("home.searchFolder")}
+              placeholder={t("home.searchFolder")}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
         </div>
 
-        <div className={`table${languageColumnCollapsed ? " languageCollapsed" : ""}`} aria-label="Videos">
+        <div className={`table${languageColumnCollapsed ? " languageCollapsed" : ""}`} aria-label={t("home.videos")}>
           <div className="tableHead">
             <button
               type="button"
-              aria-label={`Sort by name${sort.key === "name" ? `, currently ${sort.direction === "asc" ? "ascending" : "descending"}` : ""}`}
+              aria-label={t("home.sortBy", {
+                field: t("home.columns.name"),
+                current: sort.key === "name" ? t(`home.sort.${sort.direction}`) : "",
+              })}
               onClick={() => changeSort("name")}
             >
-              Name
+              {t("home.columns.name")}
               {sort.key === "name" && (sort.direction === "asc"
                 ? <ArrowUp size={12} strokeWidth={1.75} aria-hidden="true" />
                 : <ArrowDown size={12} strokeWidth={1.75} aria-hidden="true" />)}
             </button>
-            <span>Size</span>
+            <span>{t("home.columns.size")}</span>
             <button
               type="button"
-              aria-label={`Sort by date${sort.key === "modified" ? `, currently ${sort.direction === "asc" ? "ascending" : "descending"}` : ""}`}
+              aria-label={t("home.sortBy", {
+                field: t("home.columns.date"),
+                current: sort.key === "modified" ? t(`home.sort.${sort.direction}`) : "",
+              })}
               onClick={() => changeSort("modified")}
             >
-              Date
+              {t("home.columns.date")}
               {sort.key === "modified" && (sort.direction === "asc"
                 ? <ArrowUp size={12} strokeWidth={1.75} aria-hidden="true" />
                 : <ArrowDown size={12} strokeWidth={1.75} aria-hidden="true" />)}
@@ -553,11 +563,11 @@ export default function Home() {
               className="languageToggle"
               type="button"
               aria-expanded={!languageColumnCollapsed}
-              aria-label={`${languageColumnCollapsed ? "Show" : "Hide"} language column`}
-              title={`${languageColumnCollapsed ? "Show" : "Hide"} language column`}
+              aria-label={languageColumnCollapsed ? t("home.showLanguage") : t("home.hideLanguage")}
+              title={languageColumnCollapsed ? t("home.showLanguage") : t("home.hideLanguage")}
               onClick={() => setLanguageColumnCollapsed((collapsed) => !collapsed)}
             >
-              <span className="languageToggleLabel">Language</span>
+              <span className="languageToggleLabel">{t("home.columns.language")}</span>
               <span className="languageToggleIcons" aria-hidden="true">
                 <PanelRightClose className="languageToggleCloseIcon" size={15} strokeWidth={1.75} />
                 <PanelRightOpen className="languageToggleOpenIcon" size={15} strokeWidth={1.75} />
@@ -565,7 +575,7 @@ export default function Home() {
             </button>
           </div>
           {loading && (
-            <div className="loadingRows" role="status" aria-label="Loading this directory">
+            <div className="loadingRows" role="status" aria-label={t("home.loadingDirectory")}>
               {Array.from({ length: FILE_LIST_SKELETON_ROWS }, (_, index) => (
                 <div className="row loadingRow" key={index} aria-hidden="true">
                   <span className="name">
@@ -579,11 +589,11 @@ export default function Home() {
               ))}
             </div>
           )}
-          {!loading && entries.length === 0 && <div className="empty">No supported videos or folders here.</div>}
-          {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty">No matches in this folder.</div>}
+          {!loading && entries.length === 0 && <div className="empty">{t("home.emptyFolder")}</div>}
+          {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty">{t("home.noMatches")}</div>}
           {!loading && visibleEntries.map((entry) => entry.type === "directory" ? (
             <button type="button" className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
-              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span><span className="languageCell" aria-hidden="true">—</span>
+              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>{t("home.folder")}</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString(i18n.language) : "—"}</span><span className="languageCell" aria-hidden="true">—</span>
             </button>
           ) : (
             <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
@@ -603,7 +613,7 @@ export default function Home() {
                 <span className="fileName">{entry.name}</span>
               </span>
               <span>{formatSize(entry.size)}</span>
-              <span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
+              <span>{entry.modified ? new Date(entry.modified).toLocaleDateString(i18n.language) : "—"}</span>
               <span className="languageCell" aria-hidden={languageColumnCollapsed}>
                 {entry.subtitles?.length ? entry.subtitles.map((subtitle) => {
                   const language = getSubtitleLanguage(subtitle.language);
@@ -611,14 +621,14 @@ export default function Home() {
                     <span
                       className="languageFlag"
                       role="img"
-                      aria-label={`${language.label} subtitle`}
+                      aria-label={t("home.subtitleLabel", { language: language.label })}
                       title={`${language.label} · ${subtitle.name}`}
                       key={subtitle.path}
                     >
                       {language.flag}
                     </span>
                   );
-                }) : <span aria-label="No sidecar subtitle">—</span>}
+                }) : <span aria-label={t("home.noSidecarSubtitle")}>—</span>}
               </span>
             </label>
           ))}
@@ -626,9 +636,9 @@ export default function Home() {
 
         <div className="actions">
           <div className="usage">
-            <span className="label">Usage</span>
-            <span className="usagePill"><strong>{totalTokens.toLocaleString()}</strong> AI tokens</span>
-            <span className="usagePill"><strong>{quotaRemaining ?? "—"}</strong> subtitles remaining</span>
+            <span className="label">{t("home.usage.title")}</span>
+            <span className="usagePill"><strong>{totalTokens.toLocaleString(i18n.language)}</strong> {t("home.usage.aiTokens")}</span>
+            <span className="usagePill"><strong>{quotaRemaining ?? "—"}</strong> {t("home.usage.subtitlesRemaining")}</span>
           </div>
           <div className="createSplit">
             <button
@@ -644,12 +654,14 @@ export default function Home() {
               disabled={!selected.length || !health?.ready || renaming || (actionMode === "subtitles" && !subtitleModes.length)}
             >
               <span>{actionMode === "rename"
-                ? `Rename files (${selected.length})`
-                : busy ? `Add to queue (${selected.length})` : `Create subtitles (${selected.length})`}</span>
+                ? t("home.actions.renameFilesCount", { count: selected.length })
+                : busy
+                  ? t("home.actions.addToQueue", { count: selected.length })
+                  : t("home.actions.createSubtitles", { count: selected.length })}</span>
               <small>{actionModeLabel}</small>
             </button>
             {subtitleModes.length > 0 && <details className="modeMenu">
-              <summary aria-label="Choose subtitle action" title="Choose subtitle action">
+              <summary aria-label={t("home.actions.choose")} title={t("home.actions.choose")}>
                 <ChevronDown size={16} strokeWidth={1.75} aria-hidden="true" />
               </summary>
               <div className="modeOptions">
@@ -676,7 +688,7 @@ export default function Home() {
                     event.currentTarget.closest("details")?.removeAttribute("open");
                   }}
                 >
-                  <span aria-hidden="true">{actionMode === "rename" && <Check size={14} strokeWidth={1.75} />}</span>Smart rename
+                  <span aria-hidden="true">{actionMode === "rename" && <Check size={14} strokeWidth={1.75} />}</span>{t("home.actions.smartRename")}
                 </button>
               </div>
             </details>}
@@ -698,37 +710,37 @@ export default function Home() {
         <form onSubmit={rename}>
           <div className="dialogHeader">
             <div>
-              <p className="eyebrow">SMART RENAME</p>
-              <h2 id="rename-title">Name {selectedPaths.length} selected video{selectedPaths.length === 1 ? "" : "s"}</h2>
+              <p className="eyebrow">{t("home.rename.eyebrow")}</p>
+              <h2 id="rename-title">{t("home.rename.title", { count: selectedPaths.length })}</h2>
             </div>
-            <button type="button" aria-label="Close smart rename" onClick={() => renameDialog.current?.close()} disabled={renaming}>
+            <button type="button" aria-label={t("home.rename.close")} onClick={() => renameDialog.current?.close()} disabled={renaming}>
               <X size={18} strokeWidth={1.75} aria-hidden="true" />
             </button>
           </div>
-          <label htmlFor="english-title">English title</label>
+          <label htmlFor="english-title">{t("home.rename.englishTitle")}</label>
           <input
             id="english-title"
             value={renameTitle}
             onChange={(event) => setRenameTitle(event.target.value)}
-            placeholder="e.g. Game of Thrones"
+            placeholder={t("home.rename.placeholder")}
             maxLength={200}
             autoFocus
             required
             disabled={renaming}
           />
-          <p>The AI will keep episode, year, quality, and extension details when they are present.</p>
+          <p>{t("home.rename.help")}</p>
           {renameError && <p className="dialogError" role="alert">{renameError}</p>}
           <div className="dialogActions">
-            <button type="button" onClick={() => renameDialog.current?.close()} disabled={renaming}>Cancel</button>
+            <button type="button" onClick={() => renameDialog.current?.close()} disabled={renaming}>{t("home.rename.cancel")}</button>
             <button className="start" type="submit" disabled={renaming || !renameTitle.trim()}>
-              {renaming ? "Renaming…" : "Rename files"}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
+              {renaming ? t("home.rename.renaming") : t("home.rename.renameFiles")}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
             </button>
           </div>
         </form>
       </dialog>
 
       {error && <p className="error" role="alert">{error}</p>}
-      <footer>Only files inside the configured {sourceType === "local" ? "local" : "WebDAV"} scan path are visible to this app.</footer>
+      <footer>{t("home.footer", { source: sourceType === "local" ? t("home.localLower") : "WebDAV" })}</footer>
     </main>
   );
 }

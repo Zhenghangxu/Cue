@@ -1,0 +1,140 @@
+{
+  "appName": "字幕制作器",
+  "meta": {
+    "description": "为视频库创建和同步多语言字幕"
+  },
+  "language": {
+    "label": "语言"
+  },
+  "header": {
+    "settingsTitle": "设置",
+    "homeDescription": "无需下载完整视频，即可查找、同步和翻译字幕。",
+    "settingsDescription": "配置字幕来源、模型和本地凭据。",
+    "media": "媒体",
+    "settings": "设置"
+  },
+  "theme": {
+    "switchToLight": "切换到浅色模式",
+    "switchToDark": "切换到深色模式"
+  },
+  "home": {
+    "errors": {
+      "loadDirectory": "无法加载此目录",
+      "backendUnavailable": "后端服务不可用",
+      "loadSubtitleSettings": "无法加载字幕设置",
+      "startJob": "无法启动任务",
+      "renameVideos": "无法重命名所选视频"
+    },
+    "jobs": {
+      "waiting": "等待开始",
+      "button": "任务，共 {{total}} 个",
+      "buttonActive": "任务，共 {{total}} 个，{{active}} 个进行中",
+      "title": "任务",
+      "queueLabel": "任务队列",
+      "done": "已完成",
+      "failed": "失败",
+      "active": "{{count}} 个进行中",
+      "allFinished": "全部完成",
+      "none": "暂无任务",
+      "clearFinished": "仅从此列表清除已完成任务",
+      "clearHint": "只清除界面记录",
+      "empty": "尚未创建任务。",
+      "elapsed": "已用时间 {{time}}"
+    },
+    "actions": {
+      "aiNaming": "AI 智能视频命名",
+      "loadingOptions": "正在加载字幕选项…",
+      "renameFilesCount": "重命名文件（{{count}}）",
+      "addToQueue": "加入队列（{{count}}）",
+      "createSubtitles": "创建字幕（{{count}}）",
+      "choose": "选择字幕操作",
+      "smartRename": "智能重命名"
+    },
+    "refresh": "刷新媒体",
+    "refreshing": "正在刷新媒体",
+    "setup": {
+      "incomplete": "后端设置尚未完成。",
+      "ffmpegMissing": "缺少 FFmpeg。",
+      "ffsubsyncMissing": "运行以下命令安装 ffsubsync："
+    },
+    "browserLabel": "{{source}} 视频浏览器",
+    "local": "本地",
+    "localLower": "本地",
+    "directoryPath": "目录路径",
+    "searchFolder": "搜索此文件夹",
+    "videos": "视频",
+    "sortBy": "按{{field}}排序{{current}}",
+    "sort": {
+      "asc": "，当前为升序",
+      "desc": "，当前为降序"
+    },
+    "columns": {
+      "name": "名称",
+      "size": "大小",
+      "date": "日期",
+      "language": "语言"
+    },
+    "showLanguage": "显示语言列",
+    "hideLanguage": "隐藏语言列",
+    "loadingDirectory": "正在加载此目录",
+    "emptyFolder": "这里没有支持的视频或文件夹。",
+    "noMatches": "此文件夹中没有匹配项。",
+    "folder": "文件夹",
+    "subtitleLabel": "{{language}}字幕",
+    "noSidecarSubtitle": "无外挂字幕",
+    "usage": {
+      "title": "用量",
+      "aiTokens": "AI token",
+      "subtitlesRemaining": "剩余字幕次数"
+    },
+    "rename": {
+      "eyebrow": "智能重命名",
+      "title": "为选中的 {{count}} 个视频命名",
+      "close": "关闭智能重命名",
+      "englishTitle": "英文标题",
+      "placeholder": "例如：Game of Thrones",
+      "help": "如文件名中包含剧集、年份、画质和扩展名信息，AI 将予以保留。",
+      "cancel": "取消",
+      "renaming": "正在重命名…",
+      "renameFiles": "重命名文件"
+    },
+    "footer": "此应用只显示已配置的{{source}}扫描路径中的文件。"
+  },
+  "settings": {
+    "loadError": "无法加载设置",
+    "saveError": "无法保存设置",
+    "configuration": "配置",
+    "credentialsNotice": "凭据存储在 config.json 中，且绝不会回传到此页面。",
+    "optional": "可选",
+    "secretStored": "已存储在 config.json 中",
+    "clearField": "清除{{field}}",
+    "clear": "清除",
+    "loading": "正在加载设置…",
+    "saving": "正在保存…",
+    "save": "保存设置",
+    "sections": {
+      "storage": "存储",
+      "subtitles": "字幕",
+      "webdav": "WebDAV",
+      "openSubtitles": "OpenSubtitles",
+      "openAI": "OpenAI"
+    },
+    "fields": {
+      "mediaSource": "媒体来源",
+      "saveSubtitles": "字幕保存位置",
+      "scanPath": "扫描路径",
+      "outputFolder": "输出文件夹",
+      "targetLanguage": "目标语言",
+      "defaultMode": "默认模式",
+      "username": "用户名",
+      "password": "密码",
+      "endpoint": "端点",
+      "apiKey": "API 密钥",
+      "consumerName": "客户端名称",
+      "baseUrl": "基础 URL",
+      "model": "模型",
+      "subtitleReasoningEffort": "字幕推理强度",
+      "renameReasoningEffort": "重命名推理强度"
+    }
+  }
+}
