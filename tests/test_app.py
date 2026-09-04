@@ -234,16 +234,15 @@ class CoreTests(unittest.TestCase):
         expected = (size + sum(range(16384))) & 0xFFFFFFFFFFFFFFFF
         self.assertEqual(calculate_moviehash(size, first, last), f"{expected:016x}")
 
-    def test_output_name_falls_back_without_overwrite(self):
-        self.assertEqual(choose_output_path("Movies/Movie.mkv", "es", lambda _: False), "Movies/Movie.srt")
-        self.assertEqual(
-            choose_output_path("Movies/Movie.mkv", "pt-br", lambda path: path.endswith("Movie.srt")),
-            "Movies/Movie.pt-BR.srt",
-        )
+    def test_output_name_always_includes_language_without_overwrite(self):
+        self.assertEqual(choose_output_path("Movies/Movie.mkv", "es", lambda _: False), "Movies/Movie.es.srt")
         with self.assertRaises(PipelineError):
             choose_output_path("Movies/Movie.mkv", "es", lambda _: True)
-        existing = {"Movie.srt", "Movie (1).srt"}
-        self.assertEqual(numbered_output_path("Movie.srt", existing.__contains__), "Movie (2).srt")
+        existing = {"Movie.zh-Hans.srt", "Movie (1).zh-Hans.srt"}
+        self.assertEqual(
+            numbered_output_path("Movie.zh-Hans.srt", existing.__contains__),
+            "Movie (2).zh-Hans.srt",
+        )
 
     def test_cues_are_bounded_by_count_and_characters(self):
         cues = [
@@ -631,7 +630,7 @@ class PipelineTests(unittest.TestCase):
             translator=translator,
         )
         self.assertNotIn("existing", result)
-        self.assertIn(b"Translated", webdav.uploads["Movie.srt"])
+        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.srt"])
 
     def test_existing_english_sidecar_is_translated_to_language_output(self):
         webdav = FakeWebDAV()
@@ -677,8 +676,8 @@ class PipelineTests(unittest.TestCase):
             translator=forbidden_ai,
             subtitle_mode="target",
         )
-        self.assertEqual(result["outputPath"], "Movie.srt")
-        self.assertEqual(webdav.uploads["Movie.srt"], SRT)
+        self.assertEqual(result["outputPath"], "Movie.zh-Hans.srt")
+        self.assertEqual(webdav.uploads["Movie.zh-Hans.srt"], SRT)
         self.assertEqual(opensubtitles.languages, ("zh-cn", "en"))
 
     def test_exact_moviehash_skips_sync_but_metadata_match_does_not(self):
@@ -750,14 +749,14 @@ class PipelineTests(unittest.TestCase):
             syncer=copy_sync,
             translator=translator,
         )
-        self.assertIn(b"Translated", webdav.uploads["Movie.srt"])
+        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.srt"])
         self.assertEqual(result["aiUsage"]["totalTokens"], 15)
         self.assertEqual(opensubtitles.languages, ("en",))
 
     def test_webdav_target_sidecar_is_copied_to_numbered_local_output(self):
         webdav = FakeWebDAV()
-        entry = FileEntry("Movie.zh-Hans.srt", "Shows/Movie.zh-Hans.srt", "file", 20)
-        data = "1\n00:00:01,000 --> 00:00:02,000\n你好\n\n".encode()
+        entry = FileEntry("Movie.srt", "Shows/Movie.srt", "file", 20)
+        data = "1\n00:00:01,000 --> 00:00:02,000\n你好，世界。这是一段中文字幕。\n\n".encode()
         webdav.sidecar_entries = [entry]
         webdav.sidecar_data[entry.path] = data
 
@@ -788,7 +787,7 @@ class PipelineTests(unittest.TestCase):
                 flat_output=True,
             )
             self.assertEqual(first["outputPath"], "Movie.zh-Hans.srt")
-            self.assertEqual(second["outputPath"], "Movie.zh-Hans (1).srt")
+            self.assertEqual(second["outputPath"], "Movie (1).zh-Hans.srt")
             self.assertTrue(first["reusedSourceSidecar"])
             self.assertEqual((Path(directory) / second["outputPath"]).read_bytes(), data)
             self.assertEqual(webdav.uploads, {})
@@ -808,8 +807,8 @@ class PipelineTests(unittest.TestCase):
                 lambda *_: None,
                 subtitle_mode="target",
             )
-            self.assertEqual(result["outputPath"], "Shows/Movie.srt")
-            self.assertEqual((folder / "Movie.srt").read_bytes(), SRT)
+            self.assertEqual(result["outputPath"], "Shows/Movie.zh-Hans.srt")
+            self.assertEqual((folder / "Movie.zh-Hans.srt").read_bytes(), SRT)
 
     def test_no_subtitle_stops_before_download_or_upload(self):
         webdav = FakeWebDAV()

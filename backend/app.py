@@ -384,14 +384,7 @@ def language_output_path(video_path: str, target_language: str, exists: Callable
 
 
 def choose_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
-    video = PurePosixPath(normalize_relative(video_path))
-    parent = "" if str(video.parent) == "." else str(video.parent)
-    names = [f"{video.stem}.srt", f"{video.stem}.{TARGET_LANGUAGES[target_language][1]}.srt"]
-    for name in names:
-        path = f"{parent}/{name}" if parent else name
-        if not exists(path):
-            return path
-    raise PipelineError(f"Both default and {TARGET_LANGUAGES[target_language][0]} subtitle files already exist")
+    return language_output_path(video_path, target_language, exists)
 
 
 def numbered_output_path(preferred_name: str, exists: Callable[[str], bool]) -> str:
@@ -400,10 +393,17 @@ def numbered_output_path(preferred_name: str, exists: Callable[[str], bool]) -> 
         raise PipelineError("Flat output filenames cannot contain directories")
     if not exists(preferred.name):
         return preferred.name
+    base, separator, language = preferred.stem.rpartition(".")
+
+    def candidate(number: int) -> str:
+        if separator:
+            return f"{base} ({number}).{language}{preferred.suffix}"
+        return f"{preferred.stem} ({number}){preferred.suffix}"
+
     index = 1
-    while exists(f"{preferred.stem} ({index}){preferred.suffix}"):
+    while exists(candidate(index)):
         index += 1
-    return f"{preferred.stem} ({index}){preferred.suffix}"
+    return candidate(index)
 
 
 def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) -> str | None:
@@ -1386,7 +1386,8 @@ def process_video(
         language = detect_sidecar_language(info.name, entry.name, data)
         if subtitle_mode == "target" and language == target_language:
             if flat_output:
-                output_path = numbered_output_path(PurePosixPath(entry.name).name, destination.exists)
+                preferred = f"{PurePosixPath(relative).stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+                output_path = numbered_output_path(preferred, destination.exists)
                 progress("saving", f"Copying {PurePosixPath(output_path).name} to the local output folder")
                 destination.put(output_path, data)
                 return {
@@ -1423,7 +1424,10 @@ def process_video(
         progress("downloading", "Using the existing English sidecar")
     else:
         output_path = (
-            numbered_output_path(f"{PurePosixPath(relative).stem}.srt", destination.exists)
+            numbered_output_path(
+                f"{PurePosixPath(relative).stem}.{TARGET_LANGUAGES[target_language][1]}.srt",
+                destination.exists,
+            )
             if flat_output
             else choose_output_path(relative, target_language, destination.exists)
         )
