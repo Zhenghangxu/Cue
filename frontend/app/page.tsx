@@ -11,6 +11,8 @@ import {
   Folder,
   ListTodo,
   LoaderCircle,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCw,
   Search,
   Trash2,
@@ -18,6 +20,13 @@ import {
 } from "lucide-react";
 import { AppHeader } from "./AppHeader";
 import { filterAndSortEntries, type EntrySort } from "./fileEntries";
+import { getSubtitleLanguage } from "./subtitleLanguages";
+
+type SidecarSubtitle = {
+  name: string;
+  path: string;
+  language?: string | null;
+};
 
 type FileEntry = {
   name: string;
@@ -25,6 +34,7 @@ type FileEntry = {
   type: "directory" | "video";
   size?: number | null;
   modified?: string | null;
+  subtitles?: SidecarSubtitle[];
 };
 
 type JobResult = {
@@ -119,6 +129,7 @@ export default function Home() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<EntrySort>({ key: "modified", direction: "desc" });
+  const [languageColumnCollapsed, setLanguageColumnCollapsed] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [queueMinimized, setQueueMinimized] = useState(true);
@@ -449,7 +460,7 @@ export default function Home() {
           </label>
         </div>
 
-        <div className="table" aria-label="Videos">
+        <div className={`table${languageColumnCollapsed ? " languageCollapsed" : ""}`} aria-label="Videos">
           <div className="tableHead">
             <button
               type="button"
@@ -472,6 +483,20 @@ export default function Home() {
                 ? <ArrowUp size={12} strokeWidth={1.75} aria-hidden="true" />
                 : <ArrowDown size={12} strokeWidth={1.75} aria-hidden="true" />)}
             </button>
+            <button
+              className="languageToggle"
+              type="button"
+              aria-expanded={!languageColumnCollapsed}
+              aria-label={`${languageColumnCollapsed ? "Show" : "Hide"} language column`}
+              title={`${languageColumnCollapsed ? "Show" : "Hide"} language column`}
+              onClick={() => setLanguageColumnCollapsed((collapsed) => !collapsed)}
+            >
+              <span className="languageToggleLabel">Language</span>
+              <span className="languageToggleIcons" aria-hidden="true">
+                <PanelRightClose className="languageToggleCloseIcon" size={15} strokeWidth={1.75} />
+                <PanelRightOpen className="languageToggleOpenIcon" size={15} strokeWidth={1.75} />
+              </span>
+            </button>
           </div>
           {loading && (
             <div className="loadingRows" role="status" aria-label="Loading this directory">
@@ -483,6 +508,7 @@ export default function Home() {
                   </span>
                   <span className="skeleton skeletonSize" />
                   <span className="skeleton skeletonDate" />
+                  <span className="skeleton skeletonLanguage languageCell" />
                 </div>
               ))}
             </div>
@@ -491,7 +517,7 @@ export default function Home() {
           {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty">No matches in this folder.</div>}
           {!loading && visibleEntries.map((entry) => entry.type === "directory" ? (
             <button type="button" className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
-              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
+              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>Folder</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span><span className="languageCell" aria-hidden="true">—</span>
             </button>
           ) : (
             <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
@@ -512,6 +538,22 @@ export default function Home() {
               </span>
               <span>{formatSize(entry.size)}</span>
               <span>{entry.modified ? new Date(entry.modified).toLocaleDateString() : "—"}</span>
+              <span className="languageCell" aria-hidden={languageColumnCollapsed}>
+                {entry.subtitles?.length ? entry.subtitles.map((subtitle) => {
+                  const language = getSubtitleLanguage(subtitle.language);
+                  return (
+                    <span
+                      className="languageFlag"
+                      role="img"
+                      aria-label={`${language.label} subtitle`}
+                      title={`${language.label} · ${subtitle.name}`}
+                      key={subtitle.path}
+                    >
+                      {language.flag}
+                    </span>
+                  );
+                }) : <span aria-label="No sidecar subtitle">—</span>}
+              </span>
             </label>
           ))}
         </div>

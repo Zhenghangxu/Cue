@@ -35,6 +35,7 @@ from backend.app import (
     calculate_moviehash,
     choose_output_path,
     detect_sidecar_language,
+    detect_sidecar_language_from_name,
     normalize_relative,
     numbered_output_path,
     process_video,
@@ -411,6 +412,9 @@ class CoreTests(unittest.TestCase):
 
     def test_sidecar_language_uses_content_and_language_suffix(self):
         video = "Movie.2026.mkv"
+        self.assertEqual(detect_sidecar_language_from_name(video, "Movie.2026.en.srt"), "en")
+        self.assertEqual(detect_sidecar_language_from_name(video, "Movie.2026.zh-Hant.srt"), "zh-tw")
+        self.assertIsNone(detect_sidecar_language_from_name(video, "Movie.2026.srt"))
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.srt", "你好，世界".encode()), "zh-cn")
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.en.srt", b"Short"), "en")
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.ja.srt", "日本語です".encode()), "ja")
@@ -424,6 +428,7 @@ class WebDAVTests(unittest.TestCase):
           <d:response><d:href>/dav/Media%20Library/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
           <d:response><d:href>/dav/Media%20Library/Shows/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
           <d:response><d:href>/dav/Media%20Library/Movie.mkv</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>123</d:getcontentlength></d:prop></d:propstat></d:response>
+          <d:response><d:href>/dav/Media%20Library/Movie.en.srt</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>42</d:getcontentlength></d:prop></d:propstat></d:response>
           <d:response><d:href>/dav/private.mkv</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>999</d:getcontentlength></d:prop></d:propstat></d:response>
         </d:multistatus>"""
 
@@ -434,6 +439,7 @@ class WebDAVTests(unittest.TestCase):
         client = httpx.Client(transport=httpx.MockTransport(handler))
         entries = WebDAV(config(), client).list("")
         self.assertEqual([(entry.type, entry.path) for entry in entries], [("directory", "Shows"), ("video", "Movie.mkv")])
+        self.assertEqual([(subtitle.name, subtitle.language) for subtitle in entries[1].subtitles], [("Movie.en.srt", "en")])
 
     def test_directory_listing_cache_refresh_and_rename_invalidation(self):
         xml = b"""<?xml version="1.0"?>
@@ -517,6 +523,10 @@ class LocalStorageTests(unittest.TestCase):
                 storage = LocalStorage(str(root))
                 self.assertEqual([(entry.type, entry.path) for entry in storage.list("")], [("directory", "Shows")])
                 self.assertEqual([entry.path for entry in storage.list("Shows")], ["Shows/Movie.mkv"])
+                self.assertEqual(
+                    [(subtitle.name, subtitle.language) for subtitle in storage.list("Shows")[0].subtitles],
+                    [("Movie.en.srt", "en")],
+                )
                 self.assertEqual(storage.file_info("Shows/Movie.mkv").size, 131_072)
                 self.assertEqual([entry.path for entry in storage.sidecars("Shows/Movie.mkv")], ["Shows/Movie.en.srt"])
                 self.assertEqual(storage.read_small("Shows/Movie.en.srt"), SRT)

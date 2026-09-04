@@ -271,12 +271,20 @@ class Config:
 
 
 @dataclass(frozen=True)
+class SidecarSubtitle:
+    name: str
+    path: str
+    language: str | None = None
+
+
+@dataclass(frozen=True)
 class FileEntry:
     name: str
     path: str
     type: str
     size: int | None = None
     modified: str | None = None
+    subtitles: tuple[SidecarSubtitle, ...] = ()
 
 
 class MediaSource(Protocol):
@@ -406,7 +414,7 @@ def numbered_output_path(preferred_name: str, exists: Callable[[str], bool]) -> 
     return candidate(index)
 
 
-def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) -> str | None:
+def detect_sidecar_language_from_name(video_name: str, subtitle_name: str) -> str | None:
     video_stem = PurePosixPath(video_name).stem
     subtitle_stem = PurePosixPath(subtitle_name).stem
     extra = subtitle_stem[len(video_stem) :] if subtitle_stem.casefold().startswith(video_stem.casefold()) else ""
@@ -421,6 +429,12 @@ def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) ->
     for code, names in aliases.items():
         if any(f".{re.sub(r'[^a-z0-9]+', '.', name.casefold()).strip('.')}." in markers for name in names):
             return code
+    return None
+
+
+def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) -> str | None:
+    if language := detect_sidecar_language_from_name(video_name, subtitle_name):
+        return language
 
     encoding = chardet.detect(data).get("encoding") or "utf-8"
     text = data.decode(encoding, errors="ignore")
@@ -433,6 +447,55 @@ def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) ->
     if latin >= 10:
         return "en"
     return None
+
+
+def matching_sidecar_entries(video_name: str, entries: Iterable[FileEntry]) -> list[FileEntry]:
+    prefix = PurePosixPath(video_name).stem.casefold()
+    matches = []
+    for entry in entries:
+        candidate = PurePosixPath(entry.name)
+        candidate_stem = candidate.stem.casefold()
+        if (
+            entry.type == "file"
+            and candidate.suffix.casefold() in SUBTITLE_EXTENSIONS
+            and (
+                candidate_stem == prefix
+                or any(candidate_stem.startswith(prefix + separator) for separator in (".", "-", "_"))
+            )
+        ):
+            matches.append(entry)
+    return sorted(
+        matches,
+        key=lambda entry: (PurePosixPath(entry.name).suffix.casefold() != ".srt", entry.name.casefold()),
+    )
+
+
+def add_sidecar_subtitles(entries: Iterable[FileEntry]) -> list[FileEntry]:
+    entries = list(entries)
+    visible = []
+    for entry in entries:
+        if entry.type == "directory":
+            visible.append(entry)
+        elif entry.type == "video":
+            sidecars = matching_sidecar_entries(entry.name, entries)
+            visible.append(
+                FileEntry(
+                    name=entry.name,
+                    path=entry.path,
+                    type=entry.type,
+                    size=entry.size,
+                    modified=entry.modified,
+                    subtitles=tuple(
+                        SidecarSubtitle(
+                            name=sidecar.name,
+                            path=sidecar.path,
+                            language=detect_sidecar_language_from_name(entry.name, sidecar.name),
+                        )
+                        for sidecar in sidecars
+                    ),
+                )
+            )
+    return visible
 
 
 def batch_cues(cues: list[tuple[int, srt.Subtitle]]) -> list[list[tuple[int, srt.Subtitle]]]:
@@ -582,7 +645,7 @@ class WebDAV:
 
         try:
             entries = [entry for entry in self._propfind(relative, 1, directory=True) if entry.path != relative]
-            entries = [entry for entry in entries if entry.type in {"directory", "video"}]
+            entries = add_sidecar_subtitles(entries)
             entries = sorted(entries, key=lambda entry: (entry.type != "directory", entry.name.casefold()))
             with self._directory_cache_lock:
                 self._directory_cache[relative] = (time.monotonic(), tuple(entries))
@@ -609,21 +672,7 @@ class WebDAV:
     def sidecars(self, video_path: str) -> list[FileEntry]:
         video = PurePosixPath(normalize_relative(video_path))
         parent = "" if str(video.parent) == "." else str(video.parent)
-        prefix = video.stem.casefold()
-        matches = []
-        for entry in self._propfind(parent, 1, directory=True):
-            candidate = PurePosixPath(entry.name)
-            candidate_stem = candidate.stem.casefold()
-            if (
-                entry.type == "file"
-                and candidate.suffix.casefold() in SUBTITLE_EXTENSIONS
-                and (
-                    candidate_stem == prefix
-                    or any(candidate_stem.startswith(prefix + separator) for separator in (".", "-", "_"))
-                )
-            ):
-                matches.append(entry)
-        return sorted(matches, key=lambda entry: (PurePosixPath(entry.name).suffix.casefold() != ".srt", entry.name.casefold()))
+        return matching_sidecar_entries(video.name, self._propfind(parent, 1, directory=True))
 
     def file_info(self, relative: str) -> FileEntry:
         relative = normalize_relative(relative)
@@ -805,32 +854,18 @@ class LocalStorage:
             entries = [entry for path in directory.iterdir() if (entry := self._entry(path))]
         except OSError as exc:
             raise PipelineError("Could not read the local directory") from exc
-        visible = [entry for entry in entries if entry.type in {"directory", "video"}]
+        visible = add_sidecar_subtitles(entries)
         return sorted(visible, key=lambda entry: (entry.type != "directory", entry.name.casefold()))
 
     def sidecars(self, video_path: str) -> list[FileEntry]:
         video = PurePosixPath(normalize_relative(video_path))
         parent = "" if str(video.parent) == "." else str(video.parent)
         directory = self._path(parent, must_exist=True)
-        prefix = video.stem.casefold()
         try:
             entries = [entry for path in directory.iterdir() if (entry := self._entry(path))]
         except OSError as exc:
             raise PipelineError("Could not inspect local sidecar subtitles") from exc
-        matches = []
-        for entry in entries:
-            candidate = PurePosixPath(entry.name)
-            candidate_stem = candidate.stem.casefold()
-            if (
-                entry.type == "file"
-                and candidate.suffix.casefold() in SUBTITLE_EXTENSIONS
-                and (
-                    candidate_stem == prefix
-                    or any(candidate_stem.startswith(prefix + separator) for separator in (".", "-", "_"))
-                )
-            ):
-                matches.append(entry)
-        return sorted(matches, key=lambda entry: (PurePosixPath(entry.name).suffix.casefold() != ".srt", entry.name.casefold()))
+        return matching_sidecar_entries(video.name, entries)
 
     def file_info(self, relative: str) -> FileEntry:
         path = self._path(relative, must_exist=True)
