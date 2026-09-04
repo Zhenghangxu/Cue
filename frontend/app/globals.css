@@ -429,7 +429,6 @@ h2 { font-size: 20px; font-weight: 600; line-height: 1.3; letter-spacing: -0.015
 }
 
 .modeMenu summary::-webkit-details-marker { display: none; }
-.createSplit:has(.start:disabled) .modeMenu summary { color: var(--muted-foreground); border-left-color: var(--border); background: var(--muted); box-shadow: none; }
 
 .modeOptions {
   position: absolute;
@@ -532,14 +531,16 @@ h2 { font-size: 20px; font-weight: 600; line-height: 1.3; letter-spacing: -0.015
 
 .queueItems { max-height: min(360px, 45vh); overflow: auto; border-top: 1px solid var(--border); }
 .queueEmpty { padding: var(--space-5) var(--space-4); color: var(--muted-foreground); font-size: 13px; text-align: center; }
-.queueItem { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); min-height: 52px; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); }
+.queueItem { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); min-height: 52px; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); }
 .queueItem:last-child { border-bottom: 0; }
 .queueItem > div, .queueItem strong, .queueItem small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queueItem strong { display: block; color: var(--foreground); font-size: 13px; font-weight: 500; }
 .queueItem small { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: 12px; }
 .queueItem .queueError { color: var(--destructive); }
+.queueTimer { color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .stage {
+  grid-column: 3;
   padding: 2px var(--space-2);
   color: var(--accent-foreground);
   border-radius: var(--radius-full);

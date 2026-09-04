@@ -29,8 +29,8 @@ export function AppHeader({
       </div>
       <div className="headerActions">
         <ThemeToggle />
-        {jobsControl}
         {refreshControl}
+        {jobsControl}
         <Link className="settingsLink" href={settingsPage ? "/" : "/settings/"}>
           {settingsPage
             ? <ArrowLeft size={16} strokeWidth={1.75} />

@@ -44,6 +44,8 @@ type JobItem = {
   path: string;
   status: string;
   message: string;
+  started_at?: number | null;
+  finished_at?: number | null;
   error?: string | null;
   result?: JobResult | null;
 };
@@ -54,6 +56,8 @@ type Job = {
   status: string;
   message: string;
   items: JobItem[];
+  created_at: number;
+  finished_at?: number | null;
   error?: string | null;
   target_language?: string;
   subtitle_mode?: string;
@@ -93,6 +97,18 @@ function formatSize(bytes?: number | null) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
+}
+
+function formatElapsedTime(startedAt?: number | null, finishedAt?: number | null) {
+  if (startedAt == null) return "0:00";
+  const elapsed = Math.max(0, Math.floor((finishedAt ?? Date.now() / 1000) - startedAt));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 export default function Home() {
@@ -254,6 +270,7 @@ export default function Home() {
         id: value.jobId,
         status: "queued",
         message: "Waiting to start",
+        created_at: Date.now() / 1000,
         subtitle_mode: subtitleMode,
         items: selectedPaths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
       };
@@ -280,6 +297,7 @@ export default function Home() {
         kind: "rename",
         status: "queued",
         message: "Waiting to start",
+        created_at: Date.now() / 1000,
         items: selectedPaths.map((path) => ({ path, status: "queued", message: "Waiting to start" })),
       });
       setSelected([]);
@@ -294,6 +312,7 @@ export default function Home() {
   const activeItems = jobs.filter((job) => !TERMINAL.has(job.status)).flatMap((job) => job.items);
   const pendingItems = activeItems.filter((item) => !TERMINAL.has(item.status));
   const busy = pendingItems.length > 0;
+  const [, setElapsedTimerTick] = useState(0);
   const completed = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const totalTokens = items.reduce((total, item) => total + (item.result?.aiUsage?.totalTokens ?? 0), 0);
@@ -302,8 +321,14 @@ export default function Home() {
     initialQuotaRemaining,
   );
   const actionModeLabel = actionMode === "rename"
-    ? "AI-powered VidHub naming"
+    ? "AI-powered video naming"
     : subtitleModes.find(({ value }) => value === subtitleMode)?.label ?? "English & target language";
+
+  useEffect(() => {
+    if (!busy) return;
+    const timer = window.setInterval(() => setElapsedTimerTick((tick) => tick + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   return (
     <main>
@@ -313,13 +338,17 @@ export default function Home() {
             className={`jobsButton${busy ? " busy" : ""}`}
             type="button"
             onClick={() => setQueueMinimized((current) => !current)}
-            aria-label={`Jobs, ${jobs.length} total`}
+            aria-label={busy
+              ? `Jobs, ${jobs.length} total, ${pendingItems.length} active`
+              : `Jobs, ${jobs.length} total`}
             aria-expanded={!queueMinimized}
             aria-controls="job-queue"
           >
-            <ListTodo size={16} strokeWidth={1.75} aria-hidden="true" />
+            {busy
+              ? <LoaderCircle className="spinner" size={16} strokeWidth={1.75} aria-hidden="true" />
+              : <ListTodo size={16} strokeWidth={1.75} aria-hidden="true" />}
             <span>Jobs</span>
-            <span className="jobsBadge" aria-hidden="true">{jobs.length}</span>
+            <span className="jobsBadge" aria-hidden="true">{pendingItems.length}</span>
           </button>
 
           {!queueMinimized && (
@@ -341,22 +370,28 @@ export default function Home() {
                   >
                     <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
                     <span className="queueTooltip" id="clear-jobs-tooltip" role="tooltip">
-                      Only clears this list
+                      Only clears UI
                     </span>
                   </button>
                 </div>
               </div>
               <div className="queueItems">
                 {items.length === 0 && <div className="queueEmpty">No jobs have been created yet.</div>}
-                {items.map((item, index) => (
-                  <div className="queueItem" key={`${item.path}-${index}`}>
-                    <div>
-                      <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
-                      <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
+                {jobs.flatMap((job) => job.items.map((item, index) => {
+                  const elapsedTime = formatElapsedTime(item.started_at, item.finished_at);
+                  return (
+                    <div className="queueItem" key={`${job.id}-${item.path}-${index}`}>
+                      <div>
+                        <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
+                        <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
+                      </div>
+                      <span className="queueTimer" role="timer" aria-label={`Elapsed time ${elapsedTime}`}>
+                        {elapsedTime}
+                      </span>
+                      <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
                     </div>
-                    <span className={`stage ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
-                  </div>
-                ))}
+                  );
+                }))}
               </div>
             </aside>
           )}
