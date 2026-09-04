@@ -28,7 +28,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit
 import httpx
 import srt
 import chardet
-from dotenv import dotenv_values, set_key, unset_key
+from dotenv import dotenv_values, unset_key
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -79,6 +79,7 @@ SETTING_DEFAULTS = {
     "openai_base_url": "https://api.openai.com/v1",
     "openai_model_id": "gpt-5.6-luna",
     "openai_reasoning_effort": "low",
+    "openai_rename_reasoning_effort": "low",
     "target_language": "zh-cn",
     "default_subtitle_mode": "bilingual",
 }
@@ -93,6 +94,17 @@ DIRECTORY_CACHE_TTL_SECONDS = 5 * 60
 DIRECTORY_CACHE_MAX_ENTRIES = 128
 DAV = "{DAV:}"
 LOGGER = logging.getLogger("uvicorn.error")
+
+
+def apply_unix_permissions(path: Path, mode: int) -> None:
+    if os.name == "nt":
+        LOGGER.warning(
+            "Skipping Unix permissions %o for %s on Windows; protect this path with Windows ACLs.",
+            mode,
+            path,
+        )
+        return
+    os.chmod(path, mode)
 
 
 class PipelineError(RuntimeError):
@@ -114,22 +126,38 @@ def validated_local_root(value: str, label: str) -> str:
     return str(path)
 
 
-def load_saved_settings() -> dict[str, str]:
+def load_saved_config() -> dict[str, str]:
     try:
         stored = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     except (OSError, json.JSONDecodeError) as exc:
         raise PipelineError("Could not read saved settings") from exc
     if not isinstance(stored, dict):
         raise PipelineError("Saved settings must be a JSON object")
-    return SETTING_DEFAULTS | {key: str(value) for key, value in stored.items() if key in SETTING_DEFAULTS}
+    return {str(key): str(value) for key, value in stored.items()}
+
+
+def load_saved_settings() -> dict[str, str]:
+    stored = load_saved_config()
+    values = SETTING_DEFAULTS | {key: value for key, value in stored.items() if key in SETTING_DEFAULTS}
+    if "openai_rename_reasoning_effort" not in stored:
+        values["openai_rename_reasoning_effort"] = values["openai_reasoning_effort"]
+    return values
 
 
 def load_saved_secrets() -> dict[str, str]:
+    stored = load_saved_config()
+    secrets = {key: stored[key] for key in SECRET_SETTINGS if stored.get(key)}
+    missing = set(SECRET_SETTINGS) - secrets.keys()
+    if not missing or not ENV_PATH.exists():
+        return secrets
     try:
-        stored = dotenv_values(ENV_PATH, interpolate=False)
-        return {key: value for key, name in SECRET_ENV_NAMES.items() if (value := stored.get(name))}
+        legacy = dotenv_values(ENV_PATH, interpolate=False)
+        secrets.update(
+            {key: value for key, name in SECRET_ENV_NAMES.items() if key in missing and (value := legacy.get(name))}
+        )
+        return secrets
     except (OSError, UnicodeError) as exc:
-        raise PipelineError("Could not read secrets from .env") from exc
+        raise PipelineError("Could not read legacy credentials from .env") from exc
 
 
 @dataclass(frozen=True)
@@ -144,6 +172,7 @@ class Config:
     openai_api_key: str
     openai_model_id: str
     openai_reasoning_effort: str
+    openai_rename_reasoning_effort: str
     target_language: str
     default_subtitle_mode: str
     opensubtitles_username: str | None = None
@@ -197,6 +226,9 @@ class Config:
         effort = values["openai_reasoning_effort"].strip().lower()
         if effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
             raise PipelineError("OpenAI reasoning effort is invalid")
+        rename_effort = values.get("openai_rename_reasoning_effort", effort).strip().lower()
+        if rename_effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise PipelineError("OpenAI rename reasoning effort is invalid")
         target_language = values["target_language"].strip().lower()
         if target_language not in TARGET_LANGUAGES:
             raise PipelineError("Target language is invalid")
@@ -226,6 +258,7 @@ class Config:
             openai_api_key=secrets["openai_api_key"],
             openai_model_id=values["openai_model_id"],
             openai_reasoning_effort=effort,
+            openai_rename_reasoning_effort=rename_effort,
             target_language=target_language,
             default_subtitle_mode=subtitle_mode,
             opensubtitles_username=values.get("opensubtitles_username") or None,
@@ -277,6 +310,8 @@ class JobItem:
     message: str = "Waiting to start"
     result: dict[str, Any] | None = None
     error: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
 
 
 @dataclass
@@ -291,6 +326,7 @@ class Job:
     message: str = "Waiting to start"
     error: str | None = None
     created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
 
 
 class JobRequest(BaseModel):
@@ -659,7 +695,7 @@ class WebDAV:
         with MEDIA_TOKENS_LOCK:
             MEDIA_TOKENS[token] = (self, relative)
         try:
-            yield f"http://127.0.0.1:8000/internal/media/{token}"
+            yield f"http://127.0.0.1:3666/internal/media/{token}"
         finally:
             with MEDIA_TOKENS_LOCK:
                 MEDIA_TOKENS.pop(token, None)
@@ -920,7 +956,7 @@ class OpenSubtitles:
     def _login(self) -> None:
         if not self.username or not self.password:
             raise PipelineError(
-                "OpenSubtitles requires a user token; add OPENSUBTITLE_USERNAME and OPENSUBTITLE_PASSWORD to .env"
+                "OpenSubtitles requires a user token; add its username and password in Settings"
             )
         response = self._request(
             "POST",
@@ -1044,7 +1080,7 @@ class OpenSubtitles:
                 message = None
             if message and "token" in message.casefold():
                 raise PipelineError(
-                    "OpenSubtitles requires a user token; add OPENSUBTITLE_USERNAME and OPENSUBTITLE_PASSWORD to .env"
+                    "OpenSubtitles requires a user token; add its username and password in Settings"
                 )
             raise PipelineError(message or f"OpenSubtitles download failed ({response.status_code})")
         payload = response.json()
@@ -1107,7 +1143,7 @@ def smart_rename(
                 {
                     "role": "developer",
                     "content": (
-                        "Rename video files for VidHub. Use the full media path as context, especially folder names "
+                        "Rename video files for video playback. Use the full media path as context, especially folder names "
                         "that identify a season. Polish the supplied English title and start every filename with it. "
                         "For TV, preserve or infer only clearly present season/episode identifiers and use "
                         "Title.S01E01; use S00E01 for specials. For movies, use Title.Year when a year is present. "
@@ -1121,7 +1157,7 @@ def smart_rename(
                 },
                 {"role": "user", "content": json.dumps({"title": title, "files": payload}, ensure_ascii=False)},
             ],
-            reasoning_effort=config.openai_reasoning_effort,
+            reasoning_effort=config.openai_rename_reasoning_effort,
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -1285,7 +1321,11 @@ def translate_srt(
         translated = translations[cue_id]
         if translated:
             subtitle.content = translated if subtitle_mode == "target" else subtitle.content.rstrip() + "\n" + translated
-    output_path.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
+    output_path.write_text(
+        srt.compose(subtitles, reindex=False),
+        encoding="utf-8",
+        newline="\n",
+    )
     return usage
 
 
@@ -1408,7 +1448,11 @@ def process_video(
                 subtitles = list(srt.parse(subtitle_source.read_text(encoding="utf-8-sig")))
                 if not subtitles:
                     raise ValueError("subtitle contains no cues")
-                synced.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
+                synced.write_text(
+                    srt.compose(subtitles, reindex=False),
+                    encoding="utf-8",
+                    newline="\n",
+                )
                 progress("synchronizing", "Exact video match; synchronization not needed")
             except (UnicodeDecodeError, ValueError, srt.SRTParseError):
                 progress("synchronizing", "Matching subtitles against a five-minute audio sample")
@@ -1452,19 +1496,31 @@ def build_storage(config: Config) -> tuple[MediaSource, SubtitleDestination]:
     return source, destination
 
 
+SERVICES_LOCK = threading.Lock()
+CONFIG: Config | None = None
+CONFIG_ERROR: str | None = None
+SOURCE: MediaSource | None = None
+DESTINATION: SubtitleDestination | None = None
+WEBDAV: WebDAV | None = None
+OPENSUBTITLES: OpenSubtitles | None = None
+
+
+def reload_services(config: Config) -> None:
+    """Build a complete service set, then expose it to new requests at once."""
+    source, destination = build_storage(config)
+    opensubtitles = OpenSubtitles(config)
+    webdav = source if isinstance(source, WebDAV) else None
+    global CONFIG, CONFIG_ERROR, SOURCE, DESTINATION, WEBDAV, OPENSUBTITLES
+    with SERVICES_LOCK:
+        CONFIG, CONFIG_ERROR = config, None
+        SOURCE, DESTINATION = source, destination
+        WEBDAV, OPENSUBTITLES = webdav, opensubtitles
+
+
 try:
-    CONFIG = Config.load()
-    CONFIG_ERROR: str | None = None
-    SOURCE, DESTINATION = build_storage(CONFIG)
-    WEBDAV = SOURCE if isinstance(SOURCE, WebDAV) else None
-    OPENSUBTITLES = OpenSubtitles(CONFIG)
+    reload_services(Config.load())
 except Exception as exc:
-    CONFIG = None
     CONFIG_ERROR = str(exc)
-    SOURCE = None
-    DESTINATION = None
-    WEBDAV = None
-    OPENSUBTITLES = None
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
@@ -1472,15 +1528,20 @@ EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="media-job")
 
 
 def require_services() -> tuple[Config, MediaSource, SubtitleDestination, OpenSubtitles]:
-    if not CONFIG or not SOURCE or not DESTINATION or not OPENSUBTITLES:
-        raise HTTPException(status_code=503, detail=CONFIG_ERROR or "Application is not configured")
-    return CONFIG, SOURCE, DESTINATION, OPENSUBTITLES
+    with SERVICES_LOCK:
+        config, source, destination, opensubtitles = CONFIG, SOURCE, DESTINATION, OPENSUBTITLES
+        error = CONFIG_ERROR
+    if config is None or source is None or destination is None or opensubtitles is None:
+        raise HTTPException(status_code=503, detail=error or "Application is not configured")
+    return config, source, destination, opensubtitles
 
 
 def update_job(job_id: str, item_index: int, stage: str, message: str) -> None:
     with JOBS_LOCK:
         job = JOBS[job_id]
         item = job.items[item_index]
+        if item.started_at is None:
+            item.started_at = time.time()
         item.status = stage
         item.message = message
         job.status = "running"
@@ -1510,7 +1571,7 @@ def run_job(job_id: str) -> None:
         for index, path in enumerate(paths):
             try:
                 if kind == "rename":
-                    update_job(job_id, index, "renaming", "Choosing a VidHub filename")
+                    update_job(job_id, index, "renaming", "Choosing a video filename")
                     source.file_info(path)
                     changes = smart_rename([path], rename_title or "", config, source, ai)
                     result = changes[0] if changes else {"from": path, "to": path}
@@ -1536,6 +1597,7 @@ def run_job(job_id: str) -> None:
                     item.status = "failed"
                     item.message = "Could not rename" if kind == "rename" else "Could not finish"
                     item.error = str(exc)
+                    item.finished_at = time.time()
             except Exception:
                 LOGGER.exception("job_item_crashed job_id=%s path=%r", job_id, path)
                 with JOBS_LOCK:
@@ -1543,11 +1605,13 @@ def run_job(job_id: str) -> None:
                     item.status = "failed"
                     item.message = "Could not finish"
                     item.error = "Unexpected internal error"
+                    item.finished_at = time.time()
             else:
                 succeeded += 1
                 with JOBS_LOCK:
                     item = JOBS[job_id].items[index]
                     item.status = "completed"
+                    item.finished_at = time.time()
                     if kind == "rename":
                         item.message = (
                             f"Renamed to {PurePosixPath(result['to']).name}"
@@ -1567,6 +1631,7 @@ def run_job(job_id: str) -> None:
             job = JOBS[job_id]
             failed = len(job.items) - succeeded
             job.status = "completed" if succeeded else "failed"
+            job.finished_at = time.time()
             job.message = f"{succeeded} of {len(job.items)} {'files renamed' if kind == 'rename' else 'videos completed'}"
             if failed:
                 job.message += f"; {failed} failed"
@@ -1578,6 +1643,7 @@ def run_job(job_id: str) -> None:
             job = JOBS.get(job_id)
             if job:
                 job.status = "failed"
+                job.finished_at = time.time()
                 job.message = "Batch failed"
                 job.error = "Unexpected internal error"
 
@@ -1705,48 +1771,55 @@ def update_settings(body: SettingsRequest) -> dict[str, Any]:
     for key in clears:
         secrets.pop(key, None)
     try:
-        Config.from_settings(values, secrets)
+        config = Config.from_settings(values, secrets)
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     temporary: Path | None = None
     try:
         CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(CONFIG_DIR, 0o700)
+        apply_unix_permissions(CONFIG_DIR, 0o700)
         with tempfile.NamedTemporaryFile(
             "w", dir=CONFIG_DIR, prefix="config.", encoding="utf-8", delete=False
         ) as output:
             temporary = Path(output.name)
-            json.dump(values, output, indent=2, sort_keys=True)
+            json.dump(values | secrets, output, indent=2, sort_keys=True)
             output.write("\n")
             output.flush()
             os.fsync(output.fileno())
-        os.chmod(temporary, 0o600)
-        for key, value in updates.items():
-            set_key(ENV_PATH, SECRET_ENV_NAMES[key], value)
-        for key in clears:
-            if ENV_PATH.exists():
-                unset_key(ENV_PATH, SECRET_ENV_NAMES[key])
-        if ENV_PATH.exists():
-            os.chmod(ENV_PATH, 0o600)
+        apply_unix_permissions(temporary, 0o600)
         os.replace(temporary, CONFIG_PATH)
-    except OSError as exc:
+        if ENV_PATH.exists():
+            legacy = dotenv_values(ENV_PATH, interpolate=False)
+            for name in SECRET_ENV_NAMES.values():
+                if name in legacy:
+                    unset_key(ENV_PATH, name)
+            apply_unix_permissions(ENV_PATH, 0o600)
+    except (OSError, UnicodeError) as exc:
         raise HTTPException(status_code=500, detail="Could not save settings") from exc
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
-    return {"saved": True, "message": "Saved to .env. Restart Subtitle Maker to apply changes."}
+    try:
+        reload_services(config)
+    except Exception as exc:
+        LOGGER.exception("settings_reload_failed")
+        raise HTTPException(status_code=500, detail="Settings were saved but could not be applied") from exc
+    return {"saved": True, "message": "Settings saved and applied."}
 
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     binaries = {"ffmpeg": bool(shutil.which("ffmpeg")), "ffsubsync": bool(shutil.which("ffsubsync"))}
-    download_auth = bool(CONFIG and CONFIG.opensubtitles_username and CONFIG.opensubtitles_password)
+    with SERVICES_LOCK:
+        config = CONFIG
+        config_error = CONFIG_ERROR
+    download_auth = bool(config and config.opensubtitles_username and config.opensubtitles_password)
     return {
-        "ready": CONFIG_ERROR is None and download_auth and all(binaries.values()),
+        "ready": config_error is None and download_auth and all(binaries.values()),
         "configuration": (
-            CONFIG_ERROR
-            or ("ready" if download_auth else "Add OPENSUBTITLE_USERNAME and OPENSUBTITLE_PASSWORD to .env")
+            config_error
+            or ("ready" if download_auth else "Add the OpenSubtitles username and password in Settings")
         ),
         "binaries": binaries,
     }

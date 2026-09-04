@@ -66,7 +66,12 @@ const SECTIONS: { title: string; fields: SettingField[] }[] = [
       { name: "openai_model_id", label: "Model" },
       {
         name: "openai_reasoning_effort",
-        label: "Reasoning effort",
+        label: "Subtitle reasoning effort",
+        options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })),
+      },
+      {
+        name: "openai_rename_reasoning_effort",
+        label: "Rename reasoning effort",
         options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })),
       },
     ],
@@ -153,8 +158,8 @@ export default function Settings() {
 
       <form className="settingsCard" onSubmit={save}>
         <div className="settingsIntro">
-          <div><p className="eyebrow">LOCAL CONFIGURATION</p><h2>Configuration</h2></div>
-          <span>Saved secret values are never sent back to this page.</span>
+          <h2>Configuration</h2>
+          <span>Credentials are stored in config.json and are never sent back to this page.</span>
         </div>
         <div className="settingsGrid">
           {SECTIONS.map((section) => {
@@ -191,7 +196,7 @@ export default function Settings() {
                       id={field.name}
                       type={field.secret ? "password" : field.type ?? "text"}
                       value={field.secret ? secretValues[field.name] ?? "" : values[field.name] ?? ""}
-                      placeholder={field.secret && storedSecrets[field.name] ? "Stored in .env" : ""}
+                      placeholder={field.secret && storedSecrets[field.name] ? "Stored in config.json" : ""}
                       onChange={(event) => field.secret
                         ? (setSecretValues((current) => ({ ...current, [field.name]: event.target.value })),
                           setClearSecrets((current) => current.filter((name) => name !== field.name)))
@@ -203,7 +208,7 @@ export default function Settings() {
                   )}
                   {field.secret && storedSecrets[field.name] && (
                     <span className="secretState">
-                      Stored in .env
+                      Stored in config.json
                       <span><input
                         type="checkbox"
                         aria-label={`Clear ${field.label}`}

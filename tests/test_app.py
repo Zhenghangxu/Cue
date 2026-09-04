@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import struct
 import tempfile
@@ -29,6 +30,7 @@ from backend.app import (
     SubtitleCandidate,
     TARGET_LANGUAGES,
     WebDAV,
+    apply_unix_permissions,
     batch_cues,
     calculate_moviehash,
     choose_output_path,
@@ -38,6 +40,7 @@ from backend.app import (
     process_video,
     create_job,
     get_settings,
+    require_services,
     rename_files,
     run_job,
     sync_subtitle,
@@ -62,6 +65,7 @@ def config() -> Config:
         openai_api_key="ai-key",
         openai_model_id="gpt-5.6-luna",
         openai_reasoning_effort="low",
+        openai_rename_reasoning_effort="low",
         target_language="zh-cn",
         default_subtitle_mode="bilingual",
     )
@@ -71,7 +75,18 @@ SRT = b"1\n00:00:01,000 --> 00:00:03,000\nHello there.\n\n"
 
 
 class CoreTests(unittest.TestCase):
-    def test_settings_save_secrets_to_env_and_not_config(self):
+    def test_unix_permissions_warn_and_skip_on_windows(self):
+        with (
+            patch("backend.app.os.name", "nt"),
+            patch("backend.app.os.chmod") as chmod,
+            self.assertLogs("uvicorn.error", level="WARNING") as logs,
+        ):
+            apply_unix_permissions(Path("config.json"), 0o600)
+
+        chmod.assert_not_called()
+        self.assertIn("Skipping Unix permissions 600", logs.output[0])
+
+    def test_settings_save_secrets_to_config_and_remove_legacy_env(self):
         values = {
             "webdav_username": "user",
             "webdav_endpoint": "https://example.test/dav",
@@ -81,6 +96,7 @@ class CoreTests(unittest.TestCase):
             "openai_base_url": "https://ai.example.test/v1",
             "openai_model_id": "model",
             "openai_reasoning_effort": "low",
+            "openai_rename_reasoning_effort": "medium",
             "target_language": "zh-cn",
             "default_subtitle_mode": "bilingual",
         }
@@ -96,10 +112,19 @@ class CoreTests(unittest.TestCase):
             patch("backend.app.CONFIG_PATH", Path(directory) / "config.json"),
             patch("backend.app.ENV_PATH", Path(directory) / ".env"),
         ):
+            (Path(directory) / ".env").write_text("OPENAI_API_KEY=legacy-key\nUNRELATED=value\n")
             defaults = get_settings()["values"]
             self.assertEqual(defaults["target_language"], "zh-cn")
             self.assertEqual(defaults["default_subtitle_mode"], "bilingual")
-            self.assertTrue(update_settings(SettingsRequest(values=values, secrets=secrets))["saved"])
+            self.assertEqual(defaults["openai_rename_reasoning_effort"], "low")
+            self.assertTrue(get_settings()["secrets"]["openai_api_key"])
+            result = update_settings(SettingsRequest(values=values, secrets=secrets))
+            self.assertEqual(result, {"saved": True, "message": "Settings saved and applied."})
+            active_config, active_source, active_destination, active_opensubtitles = require_services()
+            self.assertEqual(active_config.webdav_scan_path, "Media")
+            self.assertIsInstance(active_source, WebDAV)
+            self.assertIs(active_destination, active_source)
+            self.assertIsInstance(active_opensubtitles, OpenSubtitles)
             response = get_settings()
             self.assertEqual(response["values"], {
                 "source_type": "webdav",
@@ -111,15 +136,22 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(response["options"]["subtitle_modes"][-1], {"value": "bilingual", "label": "English & target language"})
             self.assertTrue(all(response["secrets"].values()))
             config_text = (Path(directory) / "config.json").read_text()
-            self.assertNotIn("secret", config_text)
-            self.assertEqual((Path(directory) / "config.json").stat().st_mode & 0o777, 0o600)
+            saved_config = json.loads(config_text)
+            self.assertEqual(saved_config["webdav_password"], "webdav-secret")
+            self.assertEqual(saved_config["opensubtitles_api_key"], "subtitle-key")
+            self.assertEqual(saved_config["opensubtitles_password"], "subtitle-secret")
+            self.assertEqual(saved_config["openai_api_key"], "ai-secret")
+            self.assertNotIn("openai_api_key", response["values"])
+            if os.name != "nt":
+                self.assertEqual((Path(directory) / "config.json").stat().st_mode & 0o777, 0o600)
             env_text = (Path(directory) / ".env").read_text()
-            self.assertIn("WEBDAV_PASSWORD='webdav-secret'", env_text)
-            self.assertIn("OPENAI_API_KEY='ai-secret'", env_text)
-            self.assertEqual((Path(directory) / ".env").stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("OPENAI_API_KEY", env_text)
+            self.assertIn("UNRELATED=value", env_text)
+            if os.name != "nt":
+                self.assertEqual((Path(directory) / ".env").stat().st_mode & 0o777, 0o600)
 
             update_settings(SettingsRequest(values=values, clear_secrets=["opensubtitles_password"]))
-            self.assertNotIn("OPENSUBTITLES_PASSWORD", (Path(directory) / ".env").read_text())
+            self.assertNotIn("opensubtitles_password", json.loads((Path(directory) / "config.json").read_text()))
             with self.assertRaises(HTTPException) as raised:
                 update_settings(SettingsRequest(values=values | {"unknown": "value"}))
             self.assertEqual(raised.exception.status_code, 400)
@@ -129,6 +161,19 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 update_settings(SettingsRequest(values=values | {"default_subtitle_mode": "invalid"}))
             self.assertEqual(raised.exception.status_code, 400)
+            with self.assertRaises(HTTPException) as raised:
+                update_settings(SettingsRequest(values=values | {"openai_rename_reasoning_effort": "invalid"}))
+            self.assertEqual(raised.exception.status_code, 400)
+
+    def test_legacy_settings_use_existing_reasoning_effort_for_rename_jobs(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "backend.app.CONFIG_PATH", Path(directory) / "config.json"
+        ) as config_path:
+            config_path.write_text(json.dumps({"openai_reasoning_effort": "high"}), encoding="utf-8")
+            values = get_settings()["values"]
+
+        self.assertEqual(values["openai_reasoning_effort"], "high")
+        self.assertEqual(values["openai_rename_reasoning_effort"], "high")
 
     def test_paths_cannot_escape_scan_root(self):
         self.assertEqual(normalize_relative("Shows/Series/Episode.mkv"), "Shows/Series/Episode.mkv")
@@ -151,6 +196,7 @@ class CoreTests(unittest.TestCase):
                 "openai_base_url": "https://ai.example.test/v1",
                 "openai_model_id": "model",
                 "openai_reasoning_effort": "low",
+                "openai_rename_reasoning_effort": "medium",
                 "target_language": "zh-cn",
                 "default_subtitle_mode": "target",
             }
@@ -831,6 +877,7 @@ class BatchJobTests(unittest.TestCase):
 
             response = create_job(JobRequest(paths=["B.mkv", "A.mkv"]))
             self.assertEqual([item.path for item in JOBS[response["jobId"]].items], ["B.mkv", "A.mkv"])
+            self.assertTrue(all(item.started_at is None for item in JOBS[response["jobId"]].items))
             queued = create_job(JobRequest(paths=["C.mkv"], mode="target"))
             self.assertEqual([item.path for item in JOBS[queued["jobId"]].items], ["C.mkv"])
             self.assertEqual(JOBS[queued["jobId"]].target_language, "es")
@@ -874,7 +921,11 @@ class BatchJobTests(unittest.TestCase):
         webdav = RenameWebDAV()
         completions = RenameCompletions()
         ai = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-        rename_config = replace(config(), openai_reasoning_effort="high")
+        rename_config = replace(
+            config(),
+            openai_reasoning_effort="minimal",
+            openai_rename_reasoning_effort="high",
+        )
         paths = ["Shows/obscure.01.1080p.mkv", "Shows/obscure.02.1080p.mkv"]
         with (
             patch("backend.app.require_services", return_value=(rename_config, webdav, webdav, object())),
@@ -929,7 +980,11 @@ class BatchJobTests(unittest.TestCase):
 
         self.assertEqual(calls, ["A.mkv", "B.mkv", "C.mkv"])
         self.assertEqual(JOBS["batch"].status, "completed")
+        self.assertIsNotNone(JOBS["batch"].finished_at)
         self.assertEqual([item.status for item in JOBS["batch"].items], ["completed", "failed", "completed"])
+        self.assertTrue(all(item.started_at is not None for item in JOBS["batch"].items))
+        self.assertTrue(all(item.finished_at is not None for item in JOBS["batch"].items))
+        self.assertTrue(all(item.started_at <= item.finished_at for item in JOBS["batch"].items))
         self.assertIn("2 of 3", JOBS["batch"].message)
 
     def test_all_failed_batch_is_failed(self):
@@ -942,6 +997,7 @@ class BatchJobTests(unittest.TestCase):
             run_job("batch")
 
         self.assertEqual(JOBS["batch"].status, "failed")
+        self.assertIsNotNone(JOBS["batch"].finished_at)
         self.assertTrue(all(item.status == "failed" for item in JOBS["batch"].items))
         self.assertEqual(JOBS["batch"].error, "Every video in the batch failed")
 
@@ -978,7 +1034,7 @@ class TranslationTests(unittest.TestCase):
             output = Path(directory) / "out.srt"
             source.write_bytes(SRT)
             usage = translate_srt(source, output, config())
-            rendered = output.read_text()
+            rendered = output.read_text(encoding="utf-8")
 
         self.assertIn("Hello there.\n你好。", rendered)
         self.assertEqual(usage["totalTokens"], 18)
@@ -1004,7 +1060,7 @@ class TranslationTests(unittest.TestCase):
                 target_language="es",
                 subtitle_mode="target",
             )
-            rendered = output.read_text()
+            rendered = output.read_text(encoding="utf-8")
 
         self.assertNotIn("Hello there.", rendered)
         self.assertIn("Spanish", fake.chat.completions.calls[0]["messages"][0]["content"])
