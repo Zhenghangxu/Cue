@@ -1,6 +1,14 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   ArrowDown,
   ArrowRight,
@@ -19,6 +27,12 @@ import {
   X,
 } from "lucide-react";
 import { AppHeader } from "./AppHeader";
+import {
+  accumulateAiUsage,
+  AI_USAGE_STORAGE_KEY,
+  parseStoredAiUsage,
+  type AiUsage,
+} from "./aiUsage";
 import {
   fetchEmbeddedSubtitleStream,
   shouldShowLanguageDash,
@@ -51,7 +65,7 @@ type JobResult = {
   release?: string;
   moviehashMatch?: boolean;
   quota?: { remaining?: number | null; resetTimeUtc?: string | null };
-  aiUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  aiUsage?: AiUsage;
   from?: string;
   to?: string;
 };
@@ -96,6 +110,33 @@ type MetadataLoad = { generation: number; path: string; refresh: boolean; videoP
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TERMINAL = new Set(["completed", "failed"]);
 const FILE_LIST_SKELETON_ROWS = 10;
+const AI_USAGE_CHANGED_EVENT = "subtitle-maker-ai-usage-changed";
+
+function subscribeToAiUsage(onStoreChange: () => void) {
+  function handleStorage(event: StorageEvent) {
+    if (event.key === AI_USAGE_STORAGE_KEY || event.key === null) onStoreChange();
+  }
+
+  window.addEventListener("storage", handleStorage);
+  window.addEventListener(AI_USAGE_CHANGED_EVENT, onStoreChange);
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    window.removeEventListener(AI_USAGE_CHANGED_EVENT, onStoreChange);
+  };
+}
+
+function getAiUsageSnapshot() {
+  try {
+    return localStorage.getItem(AI_USAGE_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function getServerAiUsageSnapshot() {
+  return "";
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     ...init,
@@ -155,6 +196,12 @@ export default function Home() {
   const [renameTitle, setRenameTitle] = useState("");
   const [renameError, setRenameError] = useState("");
   const [error, setError] = useState("");
+  const storedAiUsage = useSyncExternalStore(
+    subscribeToAiUsage,
+    getAiUsageSnapshot,
+    getServerAiUsageSnapshot,
+  );
+  const aiUsage = parseStoredAiUsage(storedAiUsage);
   const loadDirectory = useCallback(async (
     nextPath: string,
     { refresh = false, resetView = true }: DirectoryLoadOptions = {},
@@ -287,6 +334,18 @@ export default function Home() {
   }, [jobs, loadDirectory, path]);
 
   useEffect(() => {
+    try {
+      const stored = parseStoredAiUsage(localStorage.getItem(AI_USAGE_STORAGE_KEY));
+      const accumulated = accumulateAiUsage(stored, jobs);
+      if (accumulated.countedItems.length === stored.countedItems.length) return;
+      localStorage.setItem(AI_USAGE_STORAGE_KEY, JSON.stringify(accumulated));
+      window.dispatchEvent(new Event(AI_USAGE_CHANGED_EVENT));
+    } catch {
+      // Browser storage may be unavailable in private or restricted contexts.
+    }
+  }, [jobs]);
+
+  useEffect(() => {
     if (queueMinimized) return;
 
     function dismissQueue(event: PointerEvent) {
@@ -393,7 +452,7 @@ export default function Home() {
   const [, setElapsedTimerTick] = useState(0);
   const completed = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
-  const totalTokens = items.reduce((total, item) => total + (item.result?.aiUsage?.totalTokens ?? 0), 0);
+  const totalTokens = aiUsage.totalTokens;
   const quotaRemaining = items.reduce<number | null>(
     (remaining, item) => item.result?.quota?.remaining ?? remaining,
     initialQuotaRemaining,
