@@ -32,8 +32,10 @@ export function AppHeader({
         </p>
       </div>
       <div className="headerActions">
-        <LanguageSwitcher />
-        <ThemeToggle />
+        {settingsPage && <>
+          <LanguageSwitcher />
+          <ThemeToggle />
+        </>}
         {refreshControl}
         {jobsControl}
         <Link className="settingsLink" href={settingsPage ? `${localePrefix}/` : `${localePrefix}/settings/`}>

@@ -419,6 +419,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.en.srt", b"Short"), "en")
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.ja.srt", "日本語です".encode()), "ja")
         self.assertEqual(detect_sidecar_language(video, "Movie.2026.zh-Hant.srt", "繁體中文".encode()), "zh-tw")
+        self.assertEqual(
+            detect_sidecar_language_from_name(video, "Movie.2026.zh-Hans.en.srt"),
+            "zh-cn+en",
+        )
 
 
 class WebDAVTests(unittest.TestCase):
@@ -640,7 +644,8 @@ class PipelineTests(unittest.TestCase):
             translator=translator,
         )
         self.assertNotIn("existing", result)
-        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.srt"])
+        self.assertEqual(result["outputPath"], "Movie.zh-Hans.en.srt")
+        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.en.srt"])
 
     def test_existing_english_sidecar_is_translated_to_language_output(self):
         webdav = FakeWebDAV()
@@ -665,9 +670,9 @@ class PipelineTests(unittest.TestCase):
             syncer=copy_sync,
             translator=translator,
         )
-        self.assertEqual(result["outputPath"], "Movie.zh-Hans.srt")
+        self.assertEqual(result["outputPath"], "Movie.zh-Hans.en.srt")
         self.assertEqual(webdav.hash_calls, 0)
-        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.srt"])
+        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.en.srt"])
 
     def test_chinese_flow_skips_ai_and_uploads_srt(self):
         webdav = FakeWebDAV()
@@ -759,7 +764,7 @@ class PipelineTests(unittest.TestCase):
             syncer=copy_sync,
             translator=translator,
         )
-        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.srt"])
+        self.assertIn(b"Translated", webdav.uploads["Movie.zh-Hans.en.srt"])
         self.assertEqual(result["aiUsage"]["totalTokens"], 15)
         self.assertEqual(opensubtitles.languages, ("en",))
 

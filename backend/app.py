@@ -381,18 +381,36 @@ def normalize_release_filename(filename: str) -> str:
     return f"{match.group(1)} {match.group(2)}{match.group(3)}" if match else filename
 
 
-def language_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
+def subtitle_output_filename(video_path: str, target_language: str, subtitle_mode: str = "target") -> str:
+    video = PurePosixPath(normalize_relative(video_path))
+    language_postfix = TARGET_LANGUAGES[target_language][1]
+    if subtitle_mode == "bilingual":
+        language_postfix = f"{language_postfix}.en"
+    return f"{video.stem}.{language_postfix}.srt"
+
+
+def language_output_path(
+    video_path: str,
+    target_language: str,
+    exists: Callable[[str], bool],
+    subtitle_mode: str = "target",
+) -> str:
     video = PurePosixPath(normalize_relative(video_path))
     parent = "" if str(video.parent) == "." else str(video.parent)
-    name = f"{video.stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+    name = subtitle_output_filename(video.name, target_language, subtitle_mode)
     path = f"{parent}/{name}" if parent else name
     if exists(path):
         raise PipelineError(f"The {TARGET_LANGUAGES[target_language][0]} subtitle file already exists")
     return path
 
 
-def choose_output_path(video_path: str, target_language: str, exists: Callable[[str], bool]) -> str:
-    return language_output_path(video_path, target_language, exists)
+def choose_output_path(
+    video_path: str,
+    target_language: str,
+    exists: Callable[[str], bool],
+    subtitle_mode: str = "target",
+) -> str:
+    return language_output_path(video_path, target_language, exists, subtitle_mode)
 
 
 def numbered_output_path(preferred_name: str, exists: Callable[[str], bool]) -> str:
@@ -426,10 +444,28 @@ def detect_sidecar_language_from_name(video_name: str, subtitle_name: str) -> st
     }
     for code, (name, tag) in TARGET_LANGUAGES.items():
         aliases.setdefault(code, (code, tag, name))
+    matches = []
     for code, names in aliases.items():
-        if any(f".{re.sub(r'[^a-z0-9]+', '.', name.casefold()).strip('.')}." in markers for name in names):
-            return code
-    return None
+        for name in names:
+            marker = f".{re.sub(r'[^a-z0-9]+', '.', name.casefold()).strip('.')}."
+            start = markers.find(marker)
+            if start >= 0:
+                # Exclude the surrounding separators from the claimed span so
+                # adjacent markers such as ``.zh.hans.en.`` do not overlap.
+                matches.append((start + 1, start + len(marker) - 1, code))
+
+    # Prefer the most specific marker when aliases overlap (for example,
+    # ``zh-hant`` must win over the generic ``zh`` alias).
+    selected = []
+    claimed: list[tuple[int, int]] = []
+    for start, end, code in sorted(matches, key=lambda match: (-(match[1] - match[0]), match[0])):
+        if code in {match[1] for match in selected}:
+            continue
+        if any(start < claimed_end and end > claimed_start for claimed_start, claimed_end in claimed):
+            continue
+        selected.append((start, code))
+        claimed.append((start, end))
+    return "+".join(code for _, code in sorted(selected)) or None
 
 
 def detect_sidecar_language(video_name: str, subtitle_name: str, data: bytes) -> str | None:
@@ -1421,7 +1457,7 @@ def process_video(
         language = detect_sidecar_language(info.name, entry.name, data)
         if subtitle_mode == "target" and language == target_language:
             if flat_output:
-                preferred = f"{PurePosixPath(relative).stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+                preferred = subtitle_output_filename(relative, target_language, subtitle_mode)
                 output_path = numbered_output_path(preferred, destination.exists)
                 progress("saving", f"Copying {PurePosixPath(output_path).name} to the local output folder")
                 destination.put(output_path, data)
@@ -1449,10 +1485,10 @@ def process_video(
     if english_sidecar:
         entry, subtitle_bytes = english_sidecar
         if flat_output:
-            preferred = f"{PurePosixPath(relative).stem}.{TARGET_LANGUAGES[target_language][1]}.srt"
+            preferred = subtitle_output_filename(relative, target_language, subtitle_mode)
             output_path = numbered_output_path(preferred, destination.exists)
         else:
-            output_path = language_output_path(relative, target_language, destination.exists)
+            output_path = language_output_path(relative, target_language, destination.exists, subtitle_mode)
         candidate = SubtitleCandidate(0, "en", f"Existing sidecar: {entry.name}", False)
         quota = {"remaining": None, "resetTimeUtc": None}
         source_suffix = PurePosixPath(entry.name).suffix.casefold()
@@ -1460,11 +1496,11 @@ def process_video(
     else:
         output_path = (
             numbered_output_path(
-                f"{PurePosixPath(relative).stem}.{TARGET_LANGUAGES[target_language][1]}.srt",
+                subtitle_output_filename(relative, target_language, subtitle_mode),
                 destination.exists,
             )
             if flat_output
-            else choose_output_path(relative, target_language, destination.exists)
+            else choose_output_path(relative, target_language, destination.exists, subtitle_mode)
         )
         progress("hashing", "Reading the first and last 64 KiB")
         moviehash = source.moviehash(relative, info.size or 0)

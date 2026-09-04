@@ -28,5 +28,13 @@ const SUBTITLE_LANGUAGES: Record<string, SubtitleLanguage> = {
 };
 
 export function getSubtitleLanguage(code?: string | null): SubtitleLanguage {
-  return code ? SUBTITLE_LANGUAGES[code] ?? { flag: "🏳️", label: code } : { flag: "🏳️", label: "Unknown language" };
+  if (!code) return { flag: "🏳️", label: "Unknown language" };
+
+  const languages = code.split("+").filter(Boolean).map((part) => (
+    SUBTITLE_LANGUAGES[part] ?? { flag: "🏳️", label: part }
+  ));
+  return {
+    flag: languages.map((language) => language.flag).join(""),
+    label: languages.map((language) => language.label).join(" & "),
+  };
 }
