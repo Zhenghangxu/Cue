@@ -16,24 +16,23 @@ Requirements: Python 3.13, `uv`, Node.js 20+, and FFmpeg.
 ```sh
 uv sync
 npm --prefix frontend install
-npm --prefix frontend run build
-uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
+npm run prod
 ```
 
-Open <http://127.0.0.1:8000/settings/> and choose the media source and subtitle destination, then enter the service settings, target language, and default subtitle mode. Local scan and output paths must be absolute, existing, readable, and writable directories. Secrets are saved as plaintext in the ignored project-root `.env` file and are never returned to the browser after saving. Non-secret values live in `~/Library/Application Support/Subtitle Maker/config.json`. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require the optional username and password so the backend can obtain its 24-hour user token. Restart Subtitle Maker after saving changes.
+Open <http://127.0.0.1:3666/settings/> and choose the media source and subtitle destination, then enter the service settings, target language, and default subtitle mode. Local scan and output paths must be absolute, existing, readable, and writable directories. All values, including credentials, are saved in the permission-restricted `~/Library/Application Support/Subtitle Maker/config.json`; credentials are never returned to the browser after saving. Legacy credential entries in the project-root `.env` are migrated and removed on the next save without disturbing unrelated entries. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require the optional username and password so the backend can obtain its 24-hour user token. Saved changes apply immediately.
 
 ## Development
 
 Run the backend:
 
 ```sh
-uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
+uv run uvicorn backend.app:app --host 127.0.0.1 --port 3666
 ```
 
 In another terminal, run the frontend:
 
 ```sh
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm --prefix frontend run dev
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3666 npm --prefix frontend run dev
 ```
 
 Open <http://127.0.0.1:3000>.
@@ -41,11 +40,10 @@ Open <http://127.0.0.1:3000>.
 ## Local production
 
 ```sh
-npm --prefix frontend run build
-uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
+npm run prod
 ```
 
-Open <http://127.0.0.1:8000>. Build the frontend before starting the backend so FastAPI can mount the static export.
+Open <http://127.0.0.1:3666>. This builds the frontend's static production export, then starts FastAPI, which serves both the API and frontend. Run `npm start` when the frontend is already built and you only need to restart the server.
 
 ## Checks
 

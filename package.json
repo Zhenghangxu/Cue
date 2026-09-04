@@ -1,0 +1,10 @@
+{
+  "name": "subtitle-maker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "start": "uv run uvicorn backend.app:app --host 127.0.0.1 --port 3666",
+    "prod": "npm run build && npm start"
+  }
+}

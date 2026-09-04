@@ -1,4 +1,5 @@
 .env
+.env.*
 .venv/
 __pycache__/
 *.py[cod]
@@ -8,4 +9,3 @@ __pycache__/
 frontend/.next/
 frontend/out/
 frontend/node_modules/
-
