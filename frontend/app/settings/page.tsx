@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { AppHeader } from "../AppHeader";
 import { NativeSelect } from "../NativeSelect";
+import { formatSubtitleModeLabel } from "../subtitleOptions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 type Option = { value: string; label: string };
@@ -108,6 +109,8 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const targetLanguageName = options.target_languages
+    .find(({ value }) => value === values.target_language)?.label ?? values.target_language;
 
   useEffect(() => {
     fetch(`${API}/api/settings`)
@@ -188,7 +191,11 @@ export default function Settings() {
                           || values.source_type !== "local"
                           || option.value === "source")
                         .map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
+                        <option key={option.value} value={option.value}>
+                          {field.name === "default_subtitle_mode"
+                            ? formatSubtitleModeLabel(option.label, targetLanguageName)
+                            : option.label}
+                        </option>
                       ))}
                     </NativeSelect>
                   ) : (

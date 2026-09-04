@@ -21,6 +21,7 @@ import {
 import { AppHeader } from "./AppHeader";
 import { filterAndSortEntries, type EntrySort } from "./fileEntries";
 import { getSubtitleLanguage } from "./subtitleLanguages";
+import { formatSubtitleModeLabel } from "./subtitleOptions";
 
 type SidecarSubtitle = {
   name: string;
@@ -82,7 +83,7 @@ type Health = {
 type Option = { value: string; label: string };
 type SettingsResponse = {
   values: Record<string, string>;
-  options: { subtitle_modes: Option[] };
+  options: { target_languages: Option[]; subtitle_modes: Option[] };
 };
 type DirectoryLoadOptions = { refresh?: boolean; resetView?: boolean };
 
@@ -137,6 +138,7 @@ export default function Home() {
   const [actionMode, setActionMode] = useState<"subtitles" | "rename">("subtitles");
   const [subtitleMode, setSubtitleMode] = useState("bilingual");
   const [subtitleModes, setSubtitleModes] = useState<Option[]>([]);
+  const [targetLanguageName, setTargetLanguageName] = useState("");
   const [sourceType, setSourceType] = useState<"webdav" | "local">("webdav");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -189,6 +191,10 @@ export default function Home() {
     api<SettingsResponse>("/api/settings")
       .then(({ values, options }) => {
         setSubtitleModes(options.subtitle_modes);
+        setTargetLanguageName(
+          options.target_languages.find(({ value }) => value === values.target_language)?.label
+            ?? values.target_language,
+        );
         setSourceType(values.source_type === "local" ? "local" : "webdav");
         if (options.subtitle_modes.some(({ value }) => value === values.default_subtitle_mode)) {
           setSubtitleMode(values.default_subtitle_mode);
@@ -331,9 +337,12 @@ export default function Home() {
     (remaining, item) => item.result?.quota?.remaining ?? remaining,
     initialQuotaRemaining,
   );
+  const selectedSubtitleMode = subtitleModes.find(({ value }) => value === subtitleMode);
   const actionModeLabel = actionMode === "rename"
     ? "AI-powered video naming"
-    : subtitleModes.find(({ value }) => value === subtitleMode)?.label ?? "English & target language";
+    : selectedSubtitleMode
+      ? formatSubtitleModeLabel(selectedSubtitleMode.label, targetLanguageName)
+      : "Loading subtitle options…";
 
   useEffect(() => {
     if (!busy) return;
@@ -598,7 +607,8 @@ export default function Home() {
                       event.currentTarget.closest("details")?.removeAttribute("open");
                     }}
                   >
-                    <span aria-hidden="true">{actionMode === "subtitles" && option.value === subtitleMode && <Check size={14} strokeWidth={1.75} />}</span>{option.label}
+                    <span aria-hidden="true">{actionMode === "subtitles" && option.value === subtitleMode && <Check size={14} strokeWidth={1.75} />}</span>
+                    {formatSubtitleModeLabel(option.label, targetLanguageName)}
                   </button>
                 ))}
                 <button
