@@ -30,6 +30,8 @@ import {
   X,
 } from "lucide-react";
 import { useT } from "next-i18next/client";
+import { usePathname } from "next/navigation";
+import { directoryFromPathname, directoryPathname } from "./directoryRouting";
 import { AppHeader } from "./AppHeader";
 import {
   accumulateAiUsage,
@@ -168,6 +170,8 @@ function formatElapsedTime(startedAt?: number | null, finishedAt?: number | null
 
 export function Home() {
   const { t, i18n } = useT("common");
+  const pathname = usePathname();
+  const directoryRequest = useRef(0);
   const renameDialog = useRef<HTMLDialogElement>(null);
   const jobsDock = useRef<HTMLDivElement>(null);
   const modeMenu = useRef<HTMLDetailsElement>(null);
@@ -204,10 +208,13 @@ export function Home() {
     nextPath: string,
     { refresh = false, resetView = true }: DirectoryLoadOptions = {},
   ) => {
-    if (refresh) setRefreshing(true);
-    else setLoading(true);
+    const request = ++directoryRequest.current;
+    setRefreshing(refresh);
+    setLoading(!refresh);
     setError("");
     if (resetView) {
+      setPath(nextPath);
+      setEntries([]);
       setSelected([]);
       setQuery("");
     }
@@ -215,22 +222,53 @@ export function Home() {
       const data = await api<{ path: string; entries: FileEntry[] }>(
         `/api/files?path=${encodeURIComponent(nextPath)}${refresh ? "&refresh=true" : ""}`,
       );
+      if (request !== directoryRequest.current) return;
       setPath(data.path);
       setEntries(data.entries);
     } catch (reason) {
+      if (request !== directoryRequest.current) return;
       setError(reason instanceof Error ? reason.message : t("home.errors.loadDirectory"));
     } finally {
-      if (refresh) setRefreshing(false);
-      else setLoading(false);
+      if (request === directoryRequest.current) {
+        setRefreshing(false);
+        setLoading(false);
+      }
     }
   }, [t]);
+
+  function navigateDirectory(nextPath: string) {
+    const href = directoryPathname(nextPath, i18n.language);
+    if (window.location.pathname !== href) window.history.pushState(null, "", href);
+  }
+
+  useEffect(() => {
+    if (!health?.ready) return;
+    let active = true;
+    const requests = directoryRequest;
+    void Promise.resolve().then(() => {
+      if (!active) return;
+      try {
+        void loadDirectory(directoryFromPathname(pathname));
+      } catch (reason) {
+        setEntries([]);
+        setSelected([]);
+        setPath("");
+        setLoading(false);
+        setRefreshing(false);
+        setError(reason instanceof Error ? reason.message : t("home.errors.loadDirectory"));
+      }
+    });
+    return () => {
+      active = false;
+      requests.current++;
+    };
+  }, [pathname, health?.ready, loadDirectory, t]);
 
   useEffect(() => {
     api<Health>("/api/health")
       .then((value) => {
         setHealth(value);
         if (value.ready) {
-          void loadDirectory("");
           void api<{ remaining: number }>("/api/quota")
             .then(({ remaining }) => setInitialQuotaRemaining(remaining))
             .catch(() => setInitialQuotaRemaining(null));
@@ -260,7 +298,7 @@ export function Home() {
       ?? "").split(",").filter(Boolean);
     if (remembered.length) Promise.all(remembered.map((id) => api<Job>(`/api/jobs/${id}`).catch(() => null)))
       .then((values) => setJobs(values.filter((value): value is Job => Boolean(value))));
-  }, [loadDirectory, t]);
+  }, [t]);
 
   useEffect(() => {
     const active = jobs.filter((job) => !TERMINAL.has(job.status));
@@ -555,14 +593,14 @@ export function Home() {
 
       <section className="workspace" aria-label={t("home.browserLabel", { source: sourceType === "local" ? t("home.local") : "WebDAV" })}>
         <nav className="breadcrumbs" aria-label={t("home.directoryPath")}>
-          {path && <button className="parentFolder" type="button" disabled={loading} aria-label={t("home.parentFolder")} onClick={() => void loadDirectory(crumbs.at(-2)?.path ?? "")}><ArrowLeft size={16} aria-hidden="true" /></button>}
+          {path && <button className="parentFolder" type="button" disabled={loading} aria-label={t("home.parentFolder")} onClick={() => navigateDirectory(crumbs.at(-2)?.path ?? "")}><ArrowLeft size={16} aria-hidden="true" /></button>}
           {crumbs.map((crumb, index) => (
             <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
               {index > 0 && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
               <button
                 type="button"
                 title={crumb.name}
-                onClick={() => void loadDirectory(crumb.path)}
+                onClick={() => navigateDirectory(crumb.path)}
                 disabled={loading}
                 aria-current={index === crumbs.length - 1 ? "page" : undefined}
               >
@@ -653,7 +691,7 @@ export function Home() {
           {!loading && entries.length === 0 && <div className="empty"><Folder size={32} aria-hidden="true" /><strong>{t("home.emptyFolder")}</strong><span>{t("home.emptyHint")}</span></div>}
           {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty"><Search size={32} aria-hidden="true" /><strong>{t("home.noMatches")}</strong><button type="button" className="textButton" onClick={() => setQuery("")}>{t("home.clearSearch")}</button></div>}
           {!loading && visibleEntries.map((entry) => entry.type === "directory" ? (
-            <button type="button" className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
+            <button type="button" className="row folder" key={entry.path} onClick={() => navigateDirectory(entry.path)}>
               <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName" title={entry.name}>{entry.name}</span></span><span>{t("home.folder")}</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString(i18n.language) : "—"}</span><span className="languageCell folderArrow" aria-hidden="true"><ChevronRight size={16} /></span>
             </button>
           ) : (

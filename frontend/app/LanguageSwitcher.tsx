@@ -1,7 +1,8 @@
 "use client";
 
 import { Languages } from "lucide-react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
+import { directoryFromPathname, directoryPathname } from "./directoryRouting";
 import { useT } from "next-i18next/client";
 import { defaultLocale, supportedLocales, type AppLocale } from "../i18n.config";
 
@@ -12,19 +13,19 @@ const LANGUAGE_NAMES: Record<AppLocale, string> = {
 
 export function LanguageSwitcher() {
   const pathname = usePathname();
-  const router = useRouter();
   const { t, i18n } = useT("common");
   const currentLocale = supportedLocales.includes(i18n.language as AppLocale)
     ? i18n.language as AppLocale
     : defaultLocale;
 
   function switchLocale(locale: AppLocale) {
-    const segments = pathname.split("/").filter(Boolean);
-    if (supportedLocales.includes(segments[0] as AppLocale)) segments.shift();
-    const suffix = segments.length ? `/${segments.join("/")}/` : "/";
-    const href = locale === defaultLocale ? suffix : `/${locale}${suffix}`;
+    const settings = /^\/(?:en\/|zh\/)?settings\/?$/.test(pathname);
+    const href = settings
+      ? `${locale === defaultLocale ? "" : `/${locale}`}/settings/`
+      : directoryPathname(directoryFromPathname(pathname), locale);
     document.cookie = `i18next=${locale}; path=/; max-age=31536000; samesite=lax`;
-    router.push(href);
+    // Directory pages are served by the static host's fallback, not RSC routes.
+    window.location.assign(href);
   }
 
   return (

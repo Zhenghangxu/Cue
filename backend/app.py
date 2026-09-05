@@ -34,7 +34,7 @@ from fastapi.exception_handlers import http_exception_handler, request_validatio
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from backend.frontend import FrontendFiles
 from guessit import guessit
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -2031,4 +2031,4 @@ def media_proxy(token: str, request: Request) -> Response:
 
 frontend_out = BASE_DIR / "frontend" / "out"
 if frontend_out.is_dir():
-    app.mount("/", StaticFiles(directory=frontend_out, html=True), name="frontend")
+    app.mount("/", FrontendFiles(directory=frontend_out, html=True), name="frontend")
