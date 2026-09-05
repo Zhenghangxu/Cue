@@ -180,7 +180,6 @@ export function Settings() {
         <div className="settingsContent">
         <div className="settingsIntro">
           <h2>{t("settings.configuration")}</h2>
-          <span>{t("settings.intro")}</span>
         </div>
         <div className="settingsGrid">
           {SECTIONS.map((section) => {

@@ -53,10 +53,18 @@ main {
   place-items: center;
   width: 40px;
   height: 40px;
-  color: #fff;
+  color: var(--primary-foreground);
   background: var(--primary);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+}
+
+.brandLogo {
+  width: 36px;
+  height: 36px;
+  background: currentColor;
+  mask: url("/cue-logo.svg") center / contain no-repeat;
+  -webkit-mask: url("/cue-logo.svg") center / contain no-repeat;
 }
 
 .brandCopy { flex: 1 1 0; min-width: 0; }
@@ -701,14 +709,15 @@ footer { padding: var(--space-5) 0 0; color: var(--muted-foreground); font-size:
 .itemCount { color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
 .textButton { padding: 8px 0; border: 0; background: transparent; color: var(--accent-foreground); font-size: 12px; font-weight: 600; cursor: pointer; }
 .textButton:hover { text-decoration: underline; text-underline-offset: 4px; }
-.libraryFooter { display: flex; align-items: center; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid var(--border); }
 .usage { gap: 18px; flex-wrap: wrap; }
 .usage .label { font-size: 11px; color: var(--muted-foreground); font-weight: 400; }
 .usagePill { padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 12px; color: var(--muted-foreground); font-weight: 400; }
 .usagePill strong { font-size: 12px; font-weight: 600; }
 .selectionSummary { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .selectionSummary strong { display: block; font-size: 14px; font-weight: 600; }
-.selectionSummary small { display: block; color: var(--muted-foreground); margin-top: 4px; font-size: 12px; }
+.selectionDetails { min-width: 0; }
+.selectionDetails .usage { margin-top: 6px; gap: 6px 18px; }
+.selectionSummary .usagePill strong { display: inline; font-size: inherit; }
 .selectionIcon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: var(--muted); color: var(--muted-foreground); flex-shrink: 0; }
 .selectionIcon.hasSelection { color: var(--accent-foreground); background: var(--accent); }
 .modeLabel { padding: 6px 10px; margin: 0; color: var(--muted-foreground); font-size: 11px; font-weight: 600; }
@@ -758,7 +767,6 @@ footer { font-size: 12px; line-height: 1.6; text-align: left; }
   .settingsCard { grid-template-columns: 155px minmax(0, 1fr); gap: 24px; }
   .tableHead, .row { grid-template-columns: minmax(0, 1fr) 70px 100px 90px; gap: 16px; }
   .table.languageCollapsed .tableHead, .table.languageCollapsed .row { grid-template-columns: minmax(0, 1fr) 70px 100px 32px; }
-  .selectionSummary small { max-width: 260px; }
 }
 
 @media (max-width: 720px) {
@@ -805,14 +813,14 @@ footer { font-size: 12px; line-height: 1.6; text-align: left; }
   .checkboxControl { width: 20px; height: 20px; border-color: var(--muted-foreground); }
   .row .languageCell { visibility: visible; font-size: 11px; justify-content: flex-end; opacity: 1; transform: none; pointer-events: auto; }
   .languageFlag { font-size: 16px; }
-  .libraryFooter { padding: 12px 14px; justify-content: flex-start; }
   .usage { gap: 12px; }
   .usage .label { display: none; }
   .usagePill, .usagePill strong { font-size: 11px; }
   .actions { left: 0; right: 0; bottom: 0; align-items: stretch; flex-direction: column; gap: 10px; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); border-radius: 16px 16px 0 0; }
   .selectionSummary { gap: 8px; justify-content: space-between; }
   .selectionSummary strong { font-size: 12px; }
-  .selectionSummary small, .selectionIcon { display: none; }
+  .selectionIcon { display: none; }
+  .selectionSummary .textButton { align-self: flex-start; }
   .selectionSummary .textButton { min-height: 24px; padding: 2px 0; }
   .createSplit, .createSplit .start { width: 100%; min-width: 0; }
   .createSplit .start { flex: 1; }

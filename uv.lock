@@ -768,7 +768,7 @@ wheels = [
 ]
 
 [[package]]
-name = "subtitle-maker"
+name = "cue"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

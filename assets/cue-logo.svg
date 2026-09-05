@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <title>Cue</title>
+  <desc>An open C with two inset subtitle lines and a subtle tonal shadow. A single-color mark for Cue.</desc>
+  <defs>
+    <filter id="cue-shadow" x="24" y="24" width="208" height="216" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dy="4" result="shadow-blur"/>
+      <feFlood flood-color="currentColor" flood-opacity="0.18"/>
+      <feComposite in2="shadow-blur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#cue-shadow)">
+  <path fill="currentColor" d="M184 48H96C69.49 48 48 69.49 48 96V160C48 186.51 69.49 208 96 208H184L152 176H96C87.16 176 80 168.84 80 160V96C80 87.16 87.16 80 96 80H152L184 48Z"/>
+  <rect x="112" y="104" width="96" height="16" rx="8" fill="currentColor"/>
+  <rect x="112" y="136" width="64" height="16" rx="8" fill="currentColor"/>
+  </g>
+</svg>

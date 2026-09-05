@@ -1,5 +1,5 @@
 {
-  "appName": "Subtitle Maker",
+  "appName": "Cue",
   "meta": {
     "description": "Create and synchronize multilingual subtitles from your video library"
   },
@@ -9,7 +9,7 @@
   "header": {
     "settingsTitle": "Settings",
     "homeDescription": "Subtitles for every story.",
-    "settingsDescription": "Make Subtitle Maker work for you.",
+    "settingsDescription": "Make Cue work for you.",
     "media": "Media",
     "settings": "Settings"
   },

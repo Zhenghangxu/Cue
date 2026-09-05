@@ -40,7 +40,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Subtitle Maker"
+CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Cue"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 ENV_PATH = BASE_DIR / ".env"
 TARGET_LANGUAGES = {
@@ -74,7 +74,7 @@ SETTING_DEFAULTS = {
     "webdav_username": "",
     "webdav_endpoint": "",
     "webdav_scan_path": "",
-    "opensubtitles_consumer_name": "subtitle-maker",
+    "opensubtitles_consumer_name": "cue",
     "opensubtitles_username": "",
     "openai_base_url": "https://api.openai.com/v1",
     "openai_model_id": "gpt-5.6-luna",
@@ -1511,7 +1511,7 @@ def process_video(
         subtitle_bytes, quota = opensubtitles.download(candidate)
         source_suffix = ".srt"
 
-    with tempfile.TemporaryDirectory(prefix="subtitle-maker-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="cue-") as temp_dir:
         temp = Path(temp_dir)
         subtitle_source = temp / f"source{source_suffix}"
         synced = temp / "synced.srt"
@@ -1723,7 +1723,7 @@ def run_job(job_id: str) -> None:
                 job.error = "Unexpected internal error"
 
 
-app = FastAPI(title="Subtitle Maker", version="0.1.0")
+app = FastAPI(title="Cue", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],

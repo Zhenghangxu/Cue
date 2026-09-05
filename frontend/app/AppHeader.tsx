@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { ArrowLeft, Captions, ChevronRight, Settings } from "lucide-react";
+import { ArrowLeft, ChevronRight, Settings } from "lucide-react";
 import { useT } from "next-i18next/client";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
@@ -21,15 +21,11 @@ export function AppHeader({
   return (
     <header className={`hero ${settingsPage ? "settingsHeader" : "homeHeader"}`}>
       <div className="mark" aria-hidden="true">
-        <Captions size={20} strokeWidth={1.75} />
+        <span className="brandLogo" />
       </div>
       <div className="brandCopy">
         <h1>{settingsPage ? t("header.settingsTitle") : t("appName")}</h1>
-        <p className="lede">
-          {settingsPage
-            ? t("header.settingsDescription")
-            : t("header.homeDescription")}
-        </p>
+        {settingsPage && <p className="lede">{t("header.settingsDescription")}</p>}
       </div>
       <div className="headerActions">
         <LanguageSwitcher />

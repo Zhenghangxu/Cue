@@ -26,7 +26,7 @@ const geistMono = Geist_Mono({
 
 const themeScript = `
   try {
-    const stored = localStorage.getItem("subtitle-maker-theme");
+    const stored = localStorage.getItem("cue-theme");
     const theme = stored === "light" || stored === "dark"
       ? stored
       : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");

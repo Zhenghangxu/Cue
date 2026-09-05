@@ -4,7 +4,7 @@ import { useCallback, useSyncExternalStore } from "react";
 
 export type Theme = "light" | "dark";
 
-const THEME_EVENT = "subtitle-maker-theme-change";
+const THEME_EVENT = "cue-theme-change";
 
 function getTheme(): Theme | null {
   if (typeof document === "undefined") return null;
@@ -22,7 +22,7 @@ export function useTheme() {
 
   const setTheme = useCallback((next: Theme) => {
     document.documentElement.dataset.theme = next;
-    localStorage.setItem("subtitle-maker-theme", next);
+    localStorage.setItem("cue-theme", next);
     window.dispatchEvent(new Event(THEME_EVENT));
   }, []);
 

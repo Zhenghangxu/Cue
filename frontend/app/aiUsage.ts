@@ -13,7 +13,7 @@ export type StoredAiUsage = AiUsage & {
   countedItems: string[];
 };
 
-export const AI_USAGE_STORAGE_KEY = "subtitle-maker-ai-usage";
+export const AI_USAGE_STORAGE_KEY = "cue-ai-usage";
 export const EMPTY_AI_USAGE: AiUsage = {
   promptTokens: 0,
   completionTokens: 0,

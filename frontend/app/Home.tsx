@@ -108,7 +108,7 @@ type DirectoryLoadOptions = { refresh?: boolean; resetView?: boolean };
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const TERMINAL = new Set(["completed", "failed"]);
 const FILE_LIST_SKELETON_ROWS = 10;
-const AI_USAGE_CHANGED_EVENT = "subtitle-maker-ai-usage-changed";
+const AI_USAGE_CHANGED_EVENT = "cue-ai-usage-changed";
 
 function subscribeToAiUsage(onStoreChange: () => void) {
   function handleStorage(event: StorageEvent) {
@@ -255,8 +255,8 @@ export function Home() {
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : t("home.errors.loadSubtitleSettings")));
 
-    const remembered = (sessionStorage.getItem("subtitle-maker-jobs")
-      ?? sessionStorage.getItem("subtitle-maker-job")
+    const remembered = (sessionStorage.getItem("cue-jobs")
+      ?? sessionStorage.getItem("cue-job")
       ?? "").split(",").filter(Boolean);
     if (remembered.length) Promise.all(remembered.map((id) => api<Job>(`/api/jobs/${id}`).catch(() => null)))
       .then((values) => setJobs(values.filter((value): value is Job => Boolean(value))));
@@ -354,8 +354,8 @@ export function Home() {
   const queueJob = useCallback((job: Job) => {
     setJobs((current) => {
       const next = [...current, job];
-      sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
-      sessionStorage.removeItem("subtitle-maker-job");
+      sessionStorage.setItem("cue-jobs", next.map(({ id }) => id).join(","));
+      sessionStorage.removeItem("cue-job");
       return next;
     });
   }, []);
@@ -363,7 +363,7 @@ export function Home() {
   function clearFinishedJobs() {
     setJobs((current) => {
       const next = current.filter((job) => !TERMINAL.has(job.status));
-      sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
+      sessionStorage.setItem("cue-jobs", next.map(({ id }) => id).join(","));
       return next;
     });
   }
@@ -539,7 +539,7 @@ export function Home() {
       )} />
 
       <section className="libraryIntro">
-        <div><p className="eyebrow">{t("home.workspace")}</p><h2>{t("home.library")}</h2><p>{t("home.libraryHint")}</p></div>
+        <div><h2>{t("home.library")}</h2></div>
         <span className="sourceBadge"><HardDrive size={15} aria-hidden="true" />{sourceType === "local" ? t("home.local") : "WebDAV"}</span>
       </section>
 
@@ -695,17 +695,16 @@ export function Home() {
           ))}
         </div>
 
-        <div className="libraryFooter">
-          <div className="usage">
-            <span className="label">{t("home.usage.title")}</span>
-            <span className="usagePill"><strong>{totalTokens.toLocaleString(i18n.language)}</strong> {t("home.usage.aiTokens")}</span>
-            <span className="usagePill"><strong>{quotaRemaining ?? "—"}</strong> {t("home.usage.subtitlesRemaining")}</span>
-          </div>
-        </div>
         <div className="actions">
           <div className="selectionSummary" aria-live="polite">
             <span className={`selectionIcon${selectedPaths.length ? " hasSelection" : ""}`}><Captions size={22} aria-hidden="true" /></span>
-            <div><strong>{selectedPaths.length ? t("home.selectedCount", { count: selectedPaths.length }) : t("home.selectPrompt")}</strong><small>{t("home.selectionHint")}</small></div>
+            <div className="selectionDetails">
+              <strong>{selectedPaths.length ? t("home.selectedCount", { count: selectedPaths.length }) : t("home.selectPrompt")}</strong>
+              <div className="usage" aria-label={t("home.usage.title")}>
+                <span className="usagePill"><strong>{totalTokens.toLocaleString(i18n.language)}</strong> {t("home.usage.aiTokens")}</span>
+                <span className="usagePill"><strong>{quotaRemaining ?? "—"}</strong> {t("home.usage.subtitlesRemaining")}</span>
+              </div>
+            </div>
             {selectedPaths.length > 0 && <button type="button" className="textButton" onClick={() => setSelected([])}>{t("home.clearSelection")}</button>}
           </div>
           <div className="createSplit">
