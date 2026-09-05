@@ -9,6 +9,8 @@ Storage is configured globally in Settings. WebDAV sources can save subtitles be
 
 Sidecar subtitles are preferred: in target-only mode an existing target-language `.srt`, `.ass`, `.ssa`, or `.vtt` completes the job immediately, while an existing English sidecar is synchronized and translated to a language-tagged SRT. Bilingual mode always uses English as its source so every cue contains both languages. Exact OpenSubtitles movie-hash matches skip audio synchronization, while all other matches retain the five-minute quality check.
 
+Synchronization runs locally. WebDAV videos are downloaded once to a temporary file, then synchronized using the same five-minute sample, 16 kHz analysis, and quality checks. The temporary video is deleted after synchronization, including on failure; no video or audio cache is retained. Local-source videos are used directly. Remote synchronization therefore requires temporary disk space for the full video and downloads the entire file, even for long movies.
+
 ## Setup
 
 Requirements: Python 3.13, `uv`, Node.js 20+, and FFmpeg.
@@ -56,3 +58,18 @@ npm --prefix frontend run build
 ```
 
 Automated tests do not call OpenSubtitles, the AI endpoint, or private WebDAV files.
+
+## Performance
+
+Translation runs up to four requests concurrently, with at most 32 cues or 6,000 characters per batch. Results are merged by cue ID to preserve order and timestamps, and subtitles are saved only after every batch succeeds. Smaller batches add some prompt-token overhead. Video batches remain sequential. WebDAV movie hashes read the two 64 KiB ranges concurrently; sidecar language tags avoid unnecessary downloads, including target subtitles reused in place.
+
+To measure the full pipeline against a folder containing one video, use the current service settings and a new local output directory:
+
+```sh
+uv run python scripts/benchmark_pipeline.py 'http://127.0.0.1:3666/your-folder/' --output-dir /tmp/cue-after
+uv run python scripts/benchmark_pipeline.py 'http://127.0.0.1:3666/your-folder/' --revision HEAD --output-dir /tmp/cue-before
+```
+
+The benchmark always creates bilingual subtitles, calls the real WebDAV/OpenSubtitles/AI services, and consumes their normal quotas. It saves subtitles, the translation input, and `report.json` locally without changing the configured destination or writing to the media source. Timings include source checks, hashing, search, download, synchronization, translation, and local saving; initial directory browsing and remote upload are excluded. `--revision` loads the selected revision's backend with the same settings for a before/after comparison.
+
+On the supplied Peppa Pig S01E02 video, two runs per version averaged **46.8 seconds before and 34.8 seconds after (26% less time)**. All 58 cues preserved English text, ordering, and timestamps. Average AI usage rose from 2,387 to 2,824 tokens (18%). See [benchmark details](docs/performance.md).

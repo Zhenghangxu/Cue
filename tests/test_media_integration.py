@@ -4,13 +4,17 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from backend.app import WebDAV, sync_subtitle
+from tests.test_app import config
 
 
 @unittest.skipUnless(os.getenv("RUN_MEDIA_INTEGRATION") == "1", "set RUN_MEDIA_INTEGRATION=1 for FFmpeg/ffsubsync smoke test")
 class MediaIntegrationTest(unittest.TestCase):
-    def test_shifted_fixture_through_range_server(self):
+    def test_downloaded_video_matches_original_local_sync(self):
         ffmpeg = shutil.which("ffmpeg")
         ffsubsync = shutil.which("ffsubsync")
         if not ffmpeg or not ffsubsync:
@@ -54,6 +58,7 @@ class MediaIntegrationTest(unittest.TestCase):
 
             class RangeHandler(BaseHTTPRequestHandler):
                 ranges = 0
+                full_gets = 0
 
                 def log_message(self, *_):
                     pass
@@ -68,6 +73,8 @@ class MediaIntegrationTest(unittest.TestCase):
                     data = video.read_bytes()
                     start, end, status = 0, len(data) - 1, 200
                     header = self.headers.get("Range")
+                    if body and not header:
+                        RangeHandler.full_gets += 1
                     if header and header.startswith("bytes="):
                         RangeHandler.ranges += 1
                         values = header[6:].split("-", 1)
@@ -92,16 +99,15 @@ class MediaIntegrationTest(unittest.TestCase):
                 result = subprocess.run(
                     [
                         ffsubsync,
-                        f"http://127.0.0.1:{server.server_port}/fixture.mp4",
+                        str(video),
                         "-i",
                         str(shifted),
                         "-o",
                         str(output),
                         "--max-duration-seconds",
-                        "5",
+                        "300",
                         "--frame-rate",
                         "16000",
-                        "--extract-audio-first",
                         "--skip-sync-on-low-quality",
                     ],
                     stdout=subprocess.DEVNULL,
@@ -109,14 +115,30 @@ class MediaIntegrationTest(unittest.TestCase):
                     timeout=60,
                     check=False,
                 )
+                self.assertEqual(result.returncode, 0)
+                self.assertTrue(output.exists() and output.stat().st_size)
+                # Use the original local media as the quality reference.
+                # Remote audio remuxing can change AAC encoder-delay handling.
+                cfg = replace(config(), webdav_endpoint=f"http://127.0.0.1:{server.server_port}/", webdav_scan_path="")
+                source = WebDAV(cfg)
+                local_output = root / "local-synced.srt"
+                before = RangeHandler.full_gets
+                try:
+                    with source.sync_input("fixture.mp4") as filename:
+                        downloaded = Path(filename)
+                        self.assertEqual(downloaded.read_bytes(), video.read_bytes())
+                        sync_subtitle(filename, shifted, local_output, cfg)
+                    self.assertFalse(downloaded.exists())
+                    self.assertEqual(RangeHandler.full_gets - before, 1)
+                    self.assertEqual(RangeHandler.ranges, 0)
+                    self.assertEqual(local_output.read_bytes(), output.read_bytes())
+                finally:
+                    source.client.close()
+                    source.media_client.close()
             finally:
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
-
-            self.assertEqual(result.returncode, 0)
-            self.assertTrue(output.exists() and output.stat().st_size)
-            self.assertGreater(RangeHandler.ranges, 0)
 
 
 if __name__ == "__main__":

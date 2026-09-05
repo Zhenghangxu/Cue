@@ -17,7 +17,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -92,6 +92,9 @@ MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 TERMINAL_STAGES = {"completed", "failed"}
 DIRECTORY_CACHE_TTL_SECONDS = 5 * 60
 DIRECTORY_CACHE_MAX_ENTRIES = 128
+TRANSLATION_BATCH_CUES = 32
+TRANSLATION_BATCH_CHARS = 6_000
+TRANSLATION_WORKERS = 4
 DAV = "{DAV:}"
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -540,7 +543,7 @@ def batch_cues(cues: list[tuple[int, srt.Subtitle]]) -> list[list[tuple[int, srt
     chars = 0
     for item in cues:
         length = len(item[1].content)
-        if current and (len(current) >= 200 or chars + length > 24_000):
+        if current and (len(current) >= TRANSLATION_BATCH_CUES or chars + length > TRANSLATION_BATCH_CHARS):
             batches.append(current)
             current, chars = [], 0
         current.append(item)
@@ -769,21 +772,47 @@ class WebDAV:
             response.close()
 
     def moviehash(self, relative: str, size: int) -> str:
-        first = self.read_range(relative, 0, HASH_BLOCK_SIZE - 1)
-        last = self.read_range(relative, size - HASH_BLOCK_SIZE, size - 1)
+        if size < HASH_BLOCK_SIZE * 2:
+            raise PipelineError("Video is too small for an OpenSubtitles hash")
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="moviehash") as executor:
+            first_read = executor.submit(self.read_range, relative, 0, HASH_BLOCK_SIZE - 1)
+            last_read = executor.submit(self.read_range, relative, size - HASH_BLOCK_SIZE, size - 1)
+            first, last = first_read.result(), last_read.result()
         return calculate_moviehash(size, first, last)
 
     @contextmanager
     def sync_input(self, relative: str) -> Iterator[str]:
         relative = normalize_relative(relative)
-        token = secrets.token_urlsafe(24)
-        with MEDIA_TOKENS_LOCK:
-            MEDIA_TOKENS[token] = (self, relative)
-        try:
-            yield f"http://127.0.0.1:3666/internal/media/{token}"
-        finally:
-            with MEDIA_TOKENS_LOCK:
-                MEDIA_TOKENS.pop(token, None)
+        # A single download lets ffsubsync probe and analyze the same local
+        # bytes without reopening the remote video. Nothing survives this job.
+        with tempfile.TemporaryDirectory(prefix="cue-media-") as directory:
+            local = Path(directory) / ("video" + PurePosixPath(relative).suffix)
+            deadline = time.monotonic() + 15 * 60
+            try:
+                response = self._open_media(relative, {"Accept-Encoding": "identity"})
+                try:
+                    if response.status_code != 200:
+                        raise PipelineError(f"WebDAV video download failed ({response.status_code})")
+                    length = response.headers.get("content-length")
+                    expected = int(length) if length is not None else None
+                    downloaded = 0
+                    with local.open("wb") as output:
+                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                            if time.monotonic() > deadline:
+                                raise PipelineError("Video download timed out")
+                            output.write(chunk)
+                            downloaded += len(chunk)
+                    if not downloaded or (expected is not None and downloaded != expected):
+                        raise PipelineError("WebDAV returned an incomplete video download")
+                finally:
+                    response.close()
+            except httpx.HTTPError as exc:
+                raise PipelineError("WebDAV video download failed") from exc
+            except ValueError as exc:
+                raise PipelineError("WebDAV returned an invalid video length") from exc
+            except OSError as exc:
+                raise PipelineError("Could not save the temporary video; check available disk space") from exc
+            yield str(local)
 
     def stream(self, relative: str, range_header: str | None) -> httpx.Response:
         headers = {"Range": range_header} if range_header else {}
@@ -1334,6 +1363,7 @@ def translate_srt(
     indexed = list(enumerate(subtitles))
     if not indexed:
         raise PipelineError("Downloaded subtitle contains no cues")
+    owns_client = client is None
     client = client or OpenAI(
         api_key=config.openai_api_key,
         base_url=config.openai_base_url,
@@ -1343,7 +1373,8 @@ def translate_srt(
     usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
     translations: dict[int, str] = {}
 
-    for batch in batch_cues(indexed):
+    def translate_batch(batch: list[tuple[int, srt.Subtitle]]) -> tuple[dict[int, str], dict[str, int]]:
+        batch_usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
         expected = {cue_id for cue_id, _ in batch}
         payload = [{"id": cue_id, "text": cue.content} for cue_id, cue in batch]
         error: Exception | None = None
@@ -1364,6 +1395,10 @@ def translate_srt(
                 )
             except Exception as exc:
                 raise PipelineError("AI translation request failed") from exc
+            if completion.usage:
+                batch_usage["promptTokens"] += completion.usage.prompt_tokens or 0
+                batch_usage["completionTokens"] += completion.usage.completion_tokens or 0
+                batch_usage["totalTokens"] += completion.usage.total_tokens or 0
             try:
                 content = completion.choices[0].message.content
                 result = json.loads(content or "")
@@ -1371,22 +1406,42 @@ def translate_srt(
                 received = [row.get("id") for row in rows]
                 if set(received) != expected or len(received) != len(expected):
                     raise ValueError("translation ids did not match the request")
+                translated_batch: dict[int, str] = {}
                 for row in rows:
                     if not isinstance(row.get("text"), str):
                         raise ValueError("translation text was invalid")
-                    translations[row["id"]] = row["text"].strip()
-                if completion.usage:
-                    usage["promptTokens"] += completion.usage.prompt_tokens or 0
-                    usage["completionTokens"] += completion.usage.completion_tokens or 0
-                    usage["totalTokens"] += completion.usage.total_tokens or 0
-                error = None
-                break
+                    translated_batch[row["id"]] = row["text"].strip()
+                return translated_batch, batch_usage
             except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
                 error = exc
                 if attempt < 2:
                     time.sleep(attempt + 1)
-        if error:
-            raise PipelineError("AI translation failed after three attempts") from error
+        raise PipelineError("AI translation failed after three attempts") from error
+
+    batches = iter(batch_cues(indexed))
+    try:
+        # Only keep a bounded window in flight. Merge on this thread by cue ID,
+        # so out-of-order responses never change cue order or timestamps.
+        with ThreadPoolExecutor(max_workers=TRANSLATION_WORKERS, thread_name_prefix="translation") as executor:
+            pending = {executor.submit(translate_batch, batch) for _, batch in zip(range(TRANSLATION_WORKERS), batches)}
+            try:
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        translated_batch, batch_usage = future.result()
+                        translations.update(translated_batch)
+                        for key in usage:
+                            usage[key] += batch_usage[key]
+                    for _ in done:
+                        batch = next(batches, None)
+                        if batch is not None:
+                            pending.add(executor.submit(translate_batch, batch))
+            finally:
+                for future in pending:
+                    future.cancel()
+    finally:
+        if owns_client:
+            client.close()
 
     for cue_id, subtitle in indexed:
         translated = translations[cue_id]
@@ -1417,7 +1472,6 @@ def sync_subtitle(video_input: str, input_path: Path, output_path: Path, _: Conf
                 "300",
                 "--frame-rate",
                 "16000",
-                "--extract-audio-first",
                 "--skip-sync-on-low-quality",
             ],
             stdout=subprocess.DEVNULL,
@@ -1452,9 +1506,16 @@ def process_video(
     info = source.file_info(relative)
     progress("searching", "Checking existing sidecar subtitles")
     english_sidecar: tuple[FileEntry, bytes] | None = None
+    wanted_languages = {"en", target_language} if subtitle_mode == "target" else {"en"}
     for entry in source.sidecars(relative):
-        data = source.read_small(entry.path)
-        language = detect_sidecar_language(info.name, entry.name, data)
+        named_language = detect_sidecar_language_from_name(info.name, entry.name)
+        if named_language and named_language not in wanted_languages:
+            continue
+        if named_language == "en" and english_sidecar is not None:
+            continue
+        reuse_in_place = subtitle_mode == "target" and named_language == target_language and not flat_output
+        data = b"" if reuse_in_place else source.read_small(entry.path)
+        language = named_language or detect_sidecar_language(info.name, entry.name, data)
         if subtitle_mode == "target" and language == target_language:
             if flat_output:
                 preferred = subtitle_output_filename(relative, target_language, subtitle_mode)
@@ -1481,6 +1542,8 @@ def process_video(
             }
         if language == "en" and english_sidecar is None:
             english_sidecar = (entry, data)
+            if subtitle_mode == "bilingual":
+                break
 
     if english_sidecar:
         entry, subtitle_bytes = english_sidecar
@@ -1530,12 +1593,14 @@ def process_video(
                 )
                 progress("synchronizing", "Exact video match; synchronization not needed")
             except (UnicodeDecodeError, ValueError, srt.SRTParseError):
-                progress("synchronizing", "Matching subtitles against a five-minute audio sample")
+                progress("synchronizing", "Preparing video for local synchronization")
                 with source.sync_input(relative) as video_input:
+                    progress("synchronizing", "Matching subtitles against a local five-minute audio sample")
                     syncer(video_input, subtitle_source, synced, config)
         else:
-            progress("synchronizing", "Matching subtitles against a five-minute audio sample")
+            progress("synchronizing", "Preparing video for local synchronization")
             with source.sync_input(relative) as video_input:
+                progress("synchronizing", "Matching subtitles against a local five-minute audio sample")
                 syncer(video_input, subtitle_source, synced, config)
         usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
         if candidate.language == "en":

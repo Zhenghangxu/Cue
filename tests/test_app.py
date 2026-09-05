@@ -251,8 +251,8 @@ class CoreTests(unittest.TestCase):
             for index in range(205)
         ]
         batches = batch_cues(cues)
-        self.assertTrue(all(len(batch) <= 200 for batch in batches))
-        self.assertTrue(all(sum(len(cue.content) for _, cue in batch) <= 24_000 for batch in batches))
+        self.assertTrue(all(len(batch) <= 32 for batch in batches))
+        self.assertTrue(all(sum(len(cue.content) for _, cue in batch) <= 6_000 for batch in batches))
         self.assertEqual(sum(map(len, batches)), len(cues))
 
     def test_candidate_preference_is_chinese_then_english(self):
@@ -1034,6 +1034,10 @@ class FakeCompletions:
 class FakeAI:
     def __init__(self, invalid=False):
         self.chat = SimpleNamespace(completions=FakeCompletions(invalid))
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     @property
     def responses(self):
