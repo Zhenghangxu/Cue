@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Check, HardDrive, Captions, Cloud, Search, Sparkles, ShieldCheck } from "lucide-react";
 import { useT } from "next-i18next/client";
 import { AppHeader } from "./AppHeader";
 import { NativeSelect } from "./NativeSelect";
@@ -25,6 +25,8 @@ type SettingField = {
   options?: Option[];
   optionKey?: keyof SettingsOptions;
 };
+const SECTION_ICONS = { storage: HardDrive, subtitles: Captions, webdav: Cloud, openSubtitles: Search, openAI: Sparkles };
+
 const SECTIONS: { titleKey: string; fields: SettingField[] }[] = [
   {
     titleKey: "storage",
@@ -111,6 +113,8 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [savedValues, setSavedValues] = useState("{}");
+  const dirty = JSON.stringify(values) !== savedValues || Object.values(secretValues).some(Boolean) || clearSecrets.length > 0;
   const targetLanguageName = options.target_languages
     .find(({ value }) => value === values.target_language)?.label ?? values.target_language;
 
@@ -121,6 +125,7 @@ export function Settings() {
         if (!response.ok) throw new Error(body.detail || t("settings.loadError"));
         const settings = body as SettingsResponse;
         setValues(settings.values);
+        setSavedValues(JSON.stringify(settings.values));
         setStoredSecrets(settings.secrets);
         setOptions(settings.options);
       })
@@ -130,6 +135,7 @@ export function Settings() {
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (loading || saving || !dirty) return;
     setSaving(true);
     setMessage("");
     setError("");
@@ -150,6 +156,7 @@ export function Settings() {
       setSecretValues({});
       setClearSecrets([]);
       setMessage(body.message);
+      setSavedValues(JSON.stringify(values));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("settings.saveError"));
     } finally {
@@ -162,16 +169,28 @@ export function Settings() {
       <AppHeader page="settings" />
 
       <form className="settingsCard" onSubmit={save}>
+        <nav className="settingsNav" aria-label={t("settings.navigation")}>
+          <p className="eyebrow">{t("settings.configuration")}</p>
+          {SECTIONS.filter((section) => section.fields.some((field) => fieldIsVisible(field, values))).map((section) => {
+            const Icon = SECTION_ICONS[section.titleKey as keyof typeof SECTION_ICONS];
+            return <a href={`#settings-${section.titleKey}`} key={section.titleKey}><Icon size={17} aria-hidden="true" />{t(`settings.sections.${section.titleKey}`)}</a>;
+          })}
+          <p className="settingsPrivacy"><ShieldCheck size={19} aria-hidden="true" />{t("settings.credentialsNotice")}</p>
+        </nav>
+        <div className="settingsContent">
         <div className="settingsIntro">
           <h2>{t("settings.configuration")}</h2>
-          <span>{t("settings.credentialsNotice")}</span>
+          <span>{t("settings.intro")}</span>
         </div>
         <div className="settingsGrid">
           {SECTIONS.map((section) => {
             const fields = section.fields.filter((field) => fieldIsVisible(field, values));
             if (!fields.length) return null;
-            return <fieldset key={section.titleKey}>
-              <legend>{t(`settings.sections.${section.titleKey}`)}</legend>
+            const Icon = SECTION_ICONS[section.titleKey as keyof typeof SECTION_ICONS];
+            return <fieldset key={section.titleKey} id={`settings-${section.titleKey}`} tabIndex={-1}>
+              <legend><Icon size={18} aria-hidden="true" />{t(`settings.sections.${section.titleKey}`)}</legend>
+              <p className="sectionDescription">{t(`settings.descriptions.${section.titleKey}`)}</p>
+              <div className="sectionFields">
               {fields.map((field) => (
                 <div className={`settingField${field.separatorBefore ? " settingFieldSeparated" : ""}`} key={field.name}>
                   <label htmlFor={field.name}>
@@ -228,21 +247,28 @@ export function Settings() {
                         onChange={(event) => setClearSecrets((current) => event.target.checked
                           ? [...current, field.name]
                           : current.filter((name) => name !== field.name))}
+                        disabled={loading || saving}
                       /> {t("settings.clear")}</span>
                     </span>
                   )}
                 </div>
               ))}
+              </div>
             </fieldset>;
           })}
+        </div>
         </div>
         <div className="settingsActions">
           <div aria-live="polite">
             {loading && <span>{t("settings.loading")}</span>}
-            {message && <span className="success">{message}</span>}
+            {!loading && !error && (dirty
+              ? <span className="unsaved">{t("settings.unsaved")}</span>
+              : message
+                ? <span className="success"><Check size={16} aria-hidden="true" />{message}</span>
+                : <span>{t("settings.upToDate")}</span>)}
             {error && <span className="settingsError" role="alert">{error}</span>}
           </div>
-          <button className="start" type="submit" disabled={loading || saving}>
+          <button className="start" type="submit" disabled={loading || saving || !dirty}>
             {saving ? t("settings.saving") : t("settings.save")}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>

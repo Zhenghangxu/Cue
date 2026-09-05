@@ -11,6 +11,9 @@ import {
 } from "react";
 import {
   ArrowDown,
+  ArrowLeft,
+  Captions,
+  HardDrive,
   ArrowRight,
   ArrowUp,
   Check,
@@ -167,6 +170,9 @@ export function Home() {
   const { t, i18n } = useT("common");
   const renameDialog = useRef<HTMLDialogElement>(null);
   const jobsDock = useRef<HTMLDivElement>(null);
+  const modeMenu = useRef<HTMLDetailsElement>(null);
+  const submittingJob = useRef(false);
+  const [starting, setStarting] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -291,9 +297,37 @@ export function Home() {
       if (!jobsDock.current?.contains(event.target as Node)) setQueueMinimized(true);
     }
 
+    function dismissOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setQueueMinimized(true);
+        jobsDock.current?.querySelector("button")?.focus();
+      }
+    }
     document.addEventListener("pointerdown", dismissQueue);
-    return () => document.removeEventListener("pointerdown", dismissQueue);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissQueue);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
   }, [queueMinimized]);
+
+  useEffect(() => {
+    function dismissMenu(event: PointerEvent) {
+      if (!modeMenu.current?.contains(event.target as Node)) modeMenu.current?.removeAttribute("open");
+    }
+    function dismissOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape" && modeMenu.current?.open) {
+        modeMenu.current.removeAttribute("open");
+        modeMenu.current.querySelector("summary")?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", dismissMenu);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissMenu);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, []);
 
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
@@ -317,14 +351,14 @@ export function Home() {
       : { key, direction: key === "name" ? "asc" : "desc" });
   }
 
-  function queueJob(job: Job) {
+  const queueJob = useCallback((job: Job) => {
     setJobs((current) => {
       const next = [...current, job];
       sessionStorage.setItem("subtitle-maker-jobs", next.map(({ id }) => id).join(","));
       sessionStorage.removeItem("subtitle-maker-job");
       return next;
     });
-  }
+  }, []);
 
   function clearFinishedJobs() {
     setJobs((current) => {
@@ -334,8 +368,10 @@ export function Home() {
     });
   }
 
-  async function start() {
-    if (!selectedPaths.length) return;
+  const handleStart = useCallback(async () => {
+    if (!selectedPaths.length || submittingJob.current) return;
+    submittingJob.current = true;
+    setStarting(true);
     setError("");
     try {
       const value = await api<{ jobId: string }>("/api/jobs", {
@@ -352,12 +388,16 @@ export function Home() {
       };
       queueJob(queued);
       setSelected([]);
+      setQueueMinimized(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("home.errors.startJob"));
+    } finally {
+      submittingJob.current = false;
+      setStarting(false);
     }
-  }
+  }, [selectedPaths, subtitleMode, t, queueJob]);
 
-  async function rename(event: FormEvent<HTMLFormElement>) {
+  const handleRename = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedPaths.length) return;
     setRenaming(true);
@@ -382,12 +422,16 @@ export function Home() {
     } finally {
       setRenaming(false);
     }
-  }
+  }, [selectedPaths, renameTitle, t, queueJob]);
 
   const items = jobs.flatMap((job) => job.items);
   const activeItems = jobs.filter((job) => !TERMINAL.has(job.status)).flatMap((job) => job.items);
   const pendingItems = activeItems.filter((item) => !TERMINAL.has(item.status));
   const busy = pendingItems.length > 0;
+  const selectablePaths = visibleEntries
+    .filter((entry) => entry.type === "video" && !pendingItems.some((item) => item.path === entry.path))
+    .map((entry) => entry.path);
+  const allVisibleSelected = selectablePaths.length > 0 && selectablePaths.every((path) => selected.includes(path));
   const [, setElapsedTimerTick] = useState(0);
   const completed = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
@@ -441,6 +485,10 @@ export function Home() {
                     : items.length ? t("home.jobs.allFinished") : t("home.jobs.none")}</b>
                 </div>
                 <div className="queueControls">
+                  <button className="queueIconButton" type="button" aria-label={t("home.jobs.close")} onClick={() => {
+                    setQueueMinimized(true);
+                    jobsDock.current?.querySelector("button")?.focus();
+                  }}><X size={16} aria-hidden="true" /></button>
                   <button
                     className="queueIconButton"
                     type="button"
@@ -457,7 +505,7 @@ export function Home() {
                 </div>
               </div>
               <div className="queueItems">
-                {items.length === 0 && <div className="queueEmpty">{t("home.jobs.empty")}</div>}
+                {items.length === 0 && <div className="queueEmpty"><ListTodo size={28} aria-hidden="true" /><strong>{t("home.jobs.empty")}</strong><span>{t("home.jobs.emptyHint")}</span></div>}
                 {jobs.flatMap((job) => job.items.map((item, index) => {
                   const elapsedTime = formatElapsedTime(item.started_at, item.finished_at);
                   return (
@@ -490,6 +538,12 @@ export function Home() {
         </button>
       )} />
 
+      <section className="libraryIntro">
+        <div><p className="eyebrow">{t("home.workspace")}</p><h2>{t("home.library")}</h2><p>{t("home.libraryHint")}</p></div>
+        <span className="sourceBadge"><HardDrive size={15} aria-hidden="true" />{sourceType === "local" ? t("home.local") : "WebDAV"}</span>
+      </section>
+
+      {error && <p className="error" role="alert">{error}</p>}
       {health && !health.ready && (
         <section className="notice" role="alert">
           <strong>{t("home.setup.incomplete")}</strong>
@@ -501,6 +555,7 @@ export function Home() {
 
       <section className="workspace" aria-label={t("home.browserLabel", { source: sourceType === "local" ? t("home.local") : "WebDAV" })}>
         <nav className="breadcrumbs" aria-label={t("home.directoryPath")}>
+          {path && <button className="parentFolder" type="button" disabled={loading} aria-label={t("home.parentFolder")} onClick={() => void loadDirectory(crumbs.at(-2)?.path ?? "")}><ArrowLeft size={16} aria-hidden="true" /></button>}
           {crumbs.map((crumb, index) => (
             <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
               {index > 0 && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
@@ -511,7 +566,7 @@ export function Home() {
                 disabled={loading}
                 aria-current={index === crumbs.length - 1 ? "page" : undefined}
               >
-                {crumb.name}
+                {index === 0 && <HardDrive size={14} aria-hidden="true" />}{crumb.name}
               </button>
             </span>
           ))}
@@ -528,6 +583,12 @@ export function Home() {
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
+          <div className="selectionTools">
+            <span className="itemCount">{loading ? t("home.loadingDirectory") : t("home.itemCount", { count: visibleEntries.length })}</span>
+            {selectablePaths.length > 0 && <button type="button" className="textButton" onClick={() => setSelected((current) => allVisibleSelected
+              ? current.filter((path) => !selectablePaths.includes(path))
+              : [...new Set([...current, ...selectablePaths])])}>{allVisibleSelected ? t("home.deselectVisible") : t("home.selectVisible")}</button>}
+          </div>
         </div>
 
         <div className={`table${languageColumnCollapsed ? " languageCollapsed" : ""}`} aria-label={t("home.videos")}>
@@ -589,11 +650,11 @@ export function Home() {
               ))}
             </div>
           )}
-          {!loading && entries.length === 0 && <div className="empty">{t("home.emptyFolder")}</div>}
-          {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty">{t("home.noMatches")}</div>}
+          {!loading && entries.length === 0 && <div className="empty"><Folder size={32} aria-hidden="true" /><strong>{t("home.emptyFolder")}</strong><span>{t("home.emptyHint")}</span></div>}
+          {!loading && entries.length > 0 && visibleEntries.length === 0 && <div className="empty"><Search size={32} aria-hidden="true" /><strong>{t("home.noMatches")}</strong><button type="button" className="textButton" onClick={() => setQuery("")}>{t("home.clearSearch")}</button></div>}
           {!loading && visibleEntries.map((entry) => entry.type === "directory" ? (
             <button type="button" className="row folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
-              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName">{entry.name}</span></span><span>{t("home.folder")}</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString(i18n.language) : "—"}</span><span className="languageCell" aria-hidden="true">—</span>
+              <span className="name"><i aria-hidden="true"><Folder size={16} strokeWidth={1.75} /></i><span className="fileName" title={entry.name}>{entry.name}</span></span><span>{t("home.folder")}</span><span>{entry.modified ? new Date(entry.modified).toLocaleDateString(i18n.language) : "—"}</span><span className="languageCell folderArrow" aria-hidden="true"><ChevronRight size={16} /></span>
             </button>
           ) : (
             <label className={`row ${selected.includes(entry.path) ? "selected" : ""}`} key={entry.path}>
@@ -610,11 +671,11 @@ export function Home() {
                   />
                   <span className="checkboxControl" aria-hidden="true"><Check size={12} strokeWidth={2.25} /></span>
                 </span>
-                <span className="fileName">{entry.name}</span>
+                <span className="fileName" title={entry.name}>{entry.name}</span>
               </span>
               <span>{formatSize(entry.size)}</span>
               <span>{entry.modified ? new Date(entry.modified).toLocaleDateString(i18n.language) : "—"}</span>
-              <span className="languageCell" aria-hidden={languageColumnCollapsed}>
+              <span className="languageCell">
                 {entry.subtitles?.length ? entry.subtitles.map((subtitle) => {
                   const language = getSubtitleLanguage(subtitle.language);
                   return (
@@ -634,11 +695,18 @@ export function Home() {
           ))}
         </div>
 
-        <div className="actions">
+        <div className="libraryFooter">
           <div className="usage">
             <span className="label">{t("home.usage.title")}</span>
             <span className="usagePill"><strong>{totalTokens.toLocaleString(i18n.language)}</strong> {t("home.usage.aiTokens")}</span>
             <span className="usagePill"><strong>{quotaRemaining ?? "—"}</strong> {t("home.usage.subtitlesRemaining")}</span>
+          </div>
+        </div>
+        <div className="actions">
+          <div className="selectionSummary" aria-live="polite">
+            <span className={`selectionIcon${selectedPaths.length ? " hasSelection" : ""}`}><Captions size={22} aria-hidden="true" /></span>
+            <div><strong>{selectedPaths.length ? t("home.selectedCount", { count: selectedPaths.length }) : t("home.selectPrompt")}</strong><small>{t("home.selectionHint")}</small></div>
+            {selectedPaths.length > 0 && <button type="button" className="textButton" onClick={() => setSelected([])}>{t("home.clearSelection")}</button>}
           </div>
           <div className="createSplit">
             <button
@@ -649,22 +717,22 @@ export function Home() {
                   setRenameTitle("");
                   setRenameError("");
                   renameDialog.current?.showModal();
-                } else void start();
+                } else void handleStart();
               }}
-              disabled={!selected.length || !health?.ready || renaming || (actionMode === "subtitles" && !subtitleModes.length)}
+              disabled={!selectedPaths.length || !health?.ready || renaming || starting || loading || (actionMode === "subtitles" && !subtitleModes.length)}
             >
-              <span>{actionMode === "rename"
-                ? t("home.actions.renameFilesCount", { count: selected.length })
+              <span>{starting ? t("home.actions.starting") : actionMode === "rename"
+                ? t("home.actions.renameFilesCount", { count: selectedPaths.length })
                 : busy
-                  ? t("home.actions.addToQueue", { count: selected.length })
-                  : t("home.actions.createSubtitles", { count: selected.length })}</span>
+                  ? t("home.actions.addToQueue", { count: selectedPaths.length })
+                  : t("home.actions.createSubtitles", { count: selectedPaths.length })}</span>
               <small>{actionModeLabel}</small>
             </button>
-            {subtitleModes.length > 0 && <details className="modeMenu">
+            {subtitleModes.length > 0 && <details className="modeMenu" ref={modeMenu}>
               <summary aria-label={t("home.actions.choose")} title={t("home.actions.choose")}>
                 <ChevronDown size={16} strokeWidth={1.75} aria-hidden="true" />
               </summary>
-              <div className="modeOptions">
+              <div className="modeOptions"><p className="modeLabel">{t("home.actions.outputFormat")}</p>
                 {subtitleModes.map((option) => (
                   <button
                     type="button"
@@ -707,7 +775,7 @@ export function Home() {
           if (event.target === event.currentTarget && !renaming) event.currentTarget.close();
         }}
       >
-        <form onSubmit={rename}>
+        <form onSubmit={handleRename}>
           <div className="dialogHeader">
             <div>
               <p className="eyebrow">{t("home.rename.eyebrow")}</p>
@@ -739,7 +807,6 @@ export function Home() {
         </form>
       </dialog>
 
-      {error && <p className="error" role="alert">{error}</p>}
       <footer>{t("home.footer", { source: sourceType === "local" ? t("home.localLower") : "WebDAV" })}</footer>
     </main>
   );

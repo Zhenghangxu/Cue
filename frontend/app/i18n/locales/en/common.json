@@ -8,8 +8,8 @@
   },
   "header": {
     "settingsTitle": "Settings",
-    "homeDescription": "Find, synchronize, and translate subtitles without downloading the full video.",
-    "settingsDescription": "Configure subtitle sources, models, and local credentials.",
+    "homeDescription": "Subtitles for every story.",
+    "settingsDescription": "Make Subtitle Maker work for you.",
     "media": "Media",
     "settings": "Settings"
   },
@@ -40,7 +40,9 @@
       "clearFinished": "Clear finished jobs from this list only",
       "clearHint": "Only clears UI",
       "empty": "No jobs have been created yet.",
-      "elapsed": "Elapsed time {{time}}"
+      "elapsed": "Elapsed time {{time}}",
+      "close": "Close jobs",
+      "emptyHint": "Select videos and create subtitles to start your first job."
     },
     "actions": {
       "aiNaming": "AI-powered video naming",
@@ -49,7 +51,9 @@
       "addToQueue": "Add to queue ({{count}})",
       "createSubtitles": "Create subtitles ({{count}})",
       "choose": "Choose subtitle action",
-      "smartRename": "Smart rename"
+      "smartRename": "Smart rename",
+      "starting": "Adding to queue…",
+      "outputFormat": "Subtitle format"
     },
     "refresh": "Refresh media",
     "refreshing": "Refreshing media",
@@ -100,15 +104,30 @@
       "renaming": "Renaming…",
       "renameFiles": "Rename files"
     },
-    "footer": "Only files inside the configured {{source}} scan path are visible to this app."
+    "footer": "Only files inside the configured {{source}} scan path are visible to this app.",
+    "workspace": "YOUR WORKSPACE",
+    "library": "Media library",
+    "libraryHint": "Open a folder, select your videos, and choose a subtitle format.",
+    "parentFolder": "Go to parent folder",
+    "selectVisible": "Select visible videos",
+    "deselectVisible": "Deselect visible",
+    "selectPrompt": "Select videos to get started",
+    "selectionHint": "Existing subtitle files are always preserved.",
+    "clearSelection": "Clear",
+    "emptyHint": "Choose another folder or check your scan path in Settings.",
+    "clearSearch": "Clear search",
+    "itemCount_one": "{{count}} item",
+    "itemCount_other": "{{count}} items",
+    "selectedCount_one": "{{count}} video selected",
+    "selectedCount_other": "{{count}} videos selected"
   },
   "settings": {
     "loadError": "Could not load settings",
     "saveError": "Could not save settings",
     "configuration": "Configuration",
-    "credentialsNotice": "Credentials are stored in config.json and are never sent back to this page.",
+    "credentialsNotice": "Credentials are saved locally and kept private.",
     "optional": "Optional",
-    "secretStored": "Stored in config.json",
+    "secretStored": "Saved securely",
     "clearField": "Clear {{field}}",
     "clear": "Clear",
     "loading": "Loading settings…",
@@ -137,6 +156,17 @@
       "model": "Model",
       "subtitleReasoningEffort": "Subtitle reasoning effort",
       "renameReasoningEffort": "Rename reasoning effort"
+    },
+    "navigation": "Settings sections",
+    "intro": "Choose your storage, subtitle preferences, and connected services.",
+    "unsaved": "Unsaved changes",
+    "upToDate": "Settings are up to date",
+    "descriptions": {
+      "storage": "Choose where to find videos and save finished subtitles. Local paths belong to the machine running this app.",
+      "subtitles": "Set your preferred language and the default format for new jobs.",
+      "webdav": "Connect your media library. Only files inside the scan path are shown.",
+      "openSubtitles": "Find matching subtitles. Add an account to enable subtitle downloads.",
+      "openAI": "Connect a Chat Completions service for translation and smart renaming."
     }
   }
 }

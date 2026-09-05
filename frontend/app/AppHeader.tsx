@@ -19,7 +19,7 @@ export function AppHeader({
   const localePrefix = i18n.language === "en" ? "" : `/${i18n.language}`;
 
   return (
-    <header className="hero">
+    <header className={`hero ${settingsPage ? "settingsHeader" : "homeHeader"}`}>
       <div className="mark" aria-hidden="true">
         <Captions size={20} strokeWidth={1.75} />
       </div>
@@ -32,10 +32,8 @@ export function AppHeader({
         </p>
       </div>
       <div className="headerActions">
-        {settingsPage && <>
-          <LanguageSwitcher />
-          <ThemeToggle />
-        </>}
+        <LanguageSwitcher />
+        <ThemeToggle />
         {refreshControl}
         {jobsControl}
         <Link className="settingsLink" href={settingsPage ? `${localePrefix}/` : `${localePrefix}/settings/`}>
