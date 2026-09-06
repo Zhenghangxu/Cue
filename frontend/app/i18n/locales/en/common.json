@@ -121,6 +121,38 @@
     "selectedCount_one": "{{count}} video selected",
     "selectedCount_other": "{{count}} videos selected"
   },
+  "setup": {
+    "finishFirst": "Finish setup to open your media library",
+    "eyebrow": "GET STARTED",
+    "title": "Welcome to Cue",
+    "intro": "A few steps to connect your library and create your first subtitles. You can change these settings later.",
+    "progress": "Step {{current}} of {{total}}",
+    "review": "Review",
+    "reviewTitle": "Ready to get started?",
+    "reviewHint": "Check your preferences before saving. Use Edit to change any section.",
+    "credentialReady": "Provided securely",
+    "edit": "Edit",
+    "back": "Back",
+    "next": "Continue",
+    "finish": "Save and open library",
+    "saveHint": "Your settings are saved when you finish setup.",
+    "servicesHint": "Saving validates your settings, but does not test service credentials. OpenSubtitles requires an account for downloads; FFmpeg and ffsubsync must be installed on the machine running Cue."
+  },
+  "folderPicker": {
+    "browseField": "Browse for {{field}}",
+    "title": "Choose a folder",
+    "hint": "Browse folders on the machine running Cue.",
+    "path": "Folder path",
+    "go": "Open",
+    "home": "Home folder",
+    "parent": "Up one level",
+    "loading": "Loading folders…",
+    "empty": "No subfolders here. You can select this folder.",
+    "error": "Could not open this folder",
+    "cancel": "Cancel",
+    "close": "Close folder browser",
+    "select": "Select this folder"
+  },
   "settings": {
     "loadError": "Could not load settings",
     "saveError": "Could not save settings",

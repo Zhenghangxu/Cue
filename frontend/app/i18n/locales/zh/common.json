@@ -117,6 +117,38 @@
     "emptyHint": "请选择其他文件夹或在设置中检查扫描路径。",
     "clearSearch": "清除搜索"
   },
+  "setup": {
+    "finishFirst": "完成设置后即可打开媒体库",
+    "eyebrow": "开始设置",
+    "title": "欢迎使用 Cue",
+    "intro": "只需几个步骤，即可连接媒体库并创建字幕。您可以稍后更改这些设置。",
+    "progress": "第 {{current}} 步，共 {{total}} 步",
+    "review": "检查设置",
+    "reviewTitle": "准备好开始了吗？",
+    "reviewHint": "保存前请检查您的设置。点击编辑可修改对应部分。",
+    "credentialReady": "已安全填写",
+    "edit": "编辑",
+    "back": "上一步",
+    "next": "继续",
+    "finish": "保存并打开媒体库",
+    "saveHint": "完成设置后才会保存您的配置。",
+    "servicesHint": "保存时会验证设置格式，但不会测试服务凭据。下载字幕需要 OpenSubtitles 账号；运行 Cue 的机器上必须安装 FFmpeg 和 ffsubsync。"
+  },
+  "folderPicker": {
+    "browseField": "浏览并选择{{field}}",
+    "title": "选择文件夹",
+    "hint": "浏览运行 Cue 的机器上的文件夹。",
+    "path": "文件夹路径",
+    "go": "打开",
+    "home": "主文件夹",
+    "parent": "上一级",
+    "loading": "正在加载文件夹…",
+    "empty": "没有子文件夹。您可以选择此文件夹。",
+    "error": "无法打开此文件夹",
+    "cancel": "取消",
+    "close": "关闭文件夹浏览器",
+    "select": "选择此文件夹"
+  },
   "settings": {
     "loadError": "无法加载设置",
     "saveError": "无法保存设置",

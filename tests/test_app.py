@@ -41,6 +41,7 @@ from backend.app import (
     process_video,
     create_job,
     get_settings,
+    local_folders,
     require_services,
     rename_files,
     run_job,
@@ -87,6 +88,40 @@ class CoreTests(unittest.TestCase):
         chmod.assert_not_called()
         self.assertIn("Skipping Unix permissions 600", logs.output[0])
 
+    def test_local_folder_browser_lists_only_visible_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "Media & TV").mkdir()
+            (root / "empty").mkdir()
+            (root / ".hidden").mkdir()
+            (root / "video.mp4").touch()
+            result = local_folders(str(root))
+            self.assertEqual(result["path"], str(root))
+            self.assertEqual(result["parent"], str(root.parent))
+            self.assertEqual([folder["name"] for folder in result["folders"]], ["empty", "Media & TV"])
+            self.assertEqual(local_folders(str(root / "empty"))["folders"], [])
+            for invalid in ("relative", str(root / "missing"), str(root / "video.mp4")):
+                with self.assertRaises(HTTPException) as caught:
+                    local_folders(invalid)
+                self.assertEqual(caught.exception.status_code, 400)
+            with patch("backend.app.Path.home", return_value=root):
+                self.assertEqual(local_folders("")["path"], str(root))
+
+    def test_setup_is_required_only_for_empty_configuration(self):
+        with tempfile.TemporaryDirectory() as directory, (
+            patch("backend.app.CONFIG_PATH", Path(directory) / "config.json")
+        ), patch("backend.app.ENV_PATH", Path(directory) / ".env"):
+            self.assertTrue(get_settings()["setup_required"])
+            (Path(directory) / "config.json").write_text("{}")
+            self.assertTrue(get_settings()["setup_required"])
+            (Path(directory) / "config.json").write_text(json.dumps({"local_scan_path": directory}))
+            self.assertFalse(get_settings()["setup_required"])
+            (Path(directory) / "config.json").write_text(json.dumps({"webdav_endpoint": "https://example.test"}))
+            self.assertFalse(get_settings()["setup_required"])
+            (Path(directory) / "config.json").write_text("{}")
+            (Path(directory) / ".env").write_text("OPENAI_API_KEY=legacy-key\n")
+            self.assertFalse(get_settings()["setup_required"])
+
     def test_settings_save_secrets_to_config_and_remove_legacy_env(self):
         values = {
             "webdav_username": "user",
@@ -127,6 +162,7 @@ class CoreTests(unittest.TestCase):
             self.assertIs(active_destination, active_source)
             self.assertIsInstance(active_opensubtitles, OpenSubtitles)
             response = get_settings()
+            self.assertFalse(response["setup_required"])
             self.assertEqual(response["values"], {
                 "source_type": "webdav",
                 "subtitle_destination": "source",

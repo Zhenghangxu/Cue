@@ -1,10 +1,12 @@
 "use client";
 
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ArrowRight, Check, HardDrive, Captions, Cloud, Search, Sparkles, ShieldCheck } from "lucide-react";
 import { useT } from "next-i18next/client";
+import { useRouter } from "next/navigation";
 import { AppHeader } from "./AppHeader";
 import { NativeSelect } from "./NativeSelect";
+import { LocalFolderPicker } from "./LocalFolderPicker";
 import { formatSubtitleModeLabel } from "./subtitleOptions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
@@ -92,13 +94,19 @@ function fieldIsVisible(field: SettingField, values: Record<string, string>) {
 }
 
 type SettingsResponse = {
+  setup_required: boolean;
   values: Record<string, string>;
   secrets: Record<string, boolean>;
   options: SettingsOptions;
 };
 
 export function Settings() {
-  const { t } = useT("common");
+  const { t, i18n } = useT("common");
+  const router = useRouter();
+  const [setup, setSetup] = useState(false);
+  const [step, setStep] = useState(0);
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const steps = ["storage", "subtitles", "openSubtitles", "openAI", "review"];
   const [values, setValues] = useState<Record<string, string>>({});
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
   const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({});
@@ -128,14 +136,29 @@ export function Settings() {
         setSavedValues(JSON.stringify(settings.values));
         setStoredSecrets(settings.secrets);
         setOptions(settings.options);
+        setSetup(settings.setup_required);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : t("settings.loadError")))
       .finally(() => setLoading(false));
   }, [t]);
 
+  function goToStep(next: number) {
+    setStep(next);
+    setError("");
+    requestAnimationFrame(() => {
+      stepHeading.current?.focus();
+      stepHeading.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (loading || saving || !dirty) return;
+    if (loading || saving) return;
+    if (setup && step < steps.length - 1) {
+      goToStep(step + 1);
+      return;
+    }
+    if (!setup && !dirty) return;
     setSaving(true);
     setMessage("");
     setError("");
@@ -157,6 +180,10 @@ export function Settings() {
       setClearSecrets([]);
       setMessage(body.message);
       setSavedValues(JSON.stringify(values));
+      if (setup) {
+        setSetup(false);
+        router.replace(`${i18n.language === "en" ? "" : `/${i18n.language}`}/`);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("settings.saveError"));
     } finally {
@@ -166,12 +193,15 @@ export function Settings() {
 
   return (
     <main className="settingsPage">
-      <AppHeader page="settings" />
+      <AppHeader page="settings" mediaDisabled={loading || setup} />
 
-      <form className="settingsCard" onSubmit={save}>
+      <form className={`settingsCard${setup ? " setupCard" : ""}`} onSubmit={save}>
         <nav className="settingsNav" aria-label={t("settings.navigation")}>
-          <p className="eyebrow">{t("settings.configuration")}</p>
-          {SECTIONS.filter((section) => section.fields.some((field) => fieldIsVisible(field, values))).map((section) => {
+          <p className="eyebrow">{t(setup ? "setup.eyebrow" : "settings.configuration")}</p>
+          {setup ? <ol className="setupSteps">{steps.map((name, index) => <li key={name} aria-current={step === index ? "step" : undefined}>
+            <span>{index < step ? <Check size={14} aria-hidden="true" /> : index + 1}</span>
+            {t(name === "review" ? "setup.review" : `settings.sections.${name}`)}
+          </li>)}</ol> : SECTIONS.filter((section) => section.fields.some((field) => fieldIsVisible(field, values))).map((section) => {
             const Icon = SECTION_ICONS[section.titleKey as keyof typeof SECTION_ICONS];
             return <a href={`#settings-${section.titleKey}`} key={section.titleKey}><Icon size={17} aria-hidden="true" />{t(`settings.sections.${section.titleKey}`)}</a>;
           })}
@@ -179,10 +209,13 @@ export function Settings() {
         </nav>
         <div className="settingsContent">
         <div className="settingsIntro">
-          <h2>{t("settings.configuration")}</h2>
+          {setup && <p className="eyebrow" aria-live="polite">{t("setup.progress", { current: step + 1, total: steps.length })}</p>}
+          <h2 ref={stepHeading} tabIndex={-1}>{t(setup ? (step === 4 ? "setup.reviewTitle" : "setup.title") : "settings.configuration")}</h2>
+          {setup && <p>{t(step === 4 ? "setup.reviewHint" : "setup.intro")}</p>}
         </div>
         <div className="settingsGrid">
           {SECTIONS.map((section) => {
+            if (setup && section.titleKey !== steps[step] && !(step === 0 && section.titleKey === "webdav")) return null;
             const fields = section.fields.filter((field) => fieldIsVisible(field, values));
             if (!fields.length) return null;
             const Icon = SECTION_ICONS[section.titleKey as keyof typeof SECTION_ICONS];
@@ -194,7 +227,7 @@ export function Settings() {
                 <div className={`settingField${field.separatorBefore ? " settingFieldSeparated" : ""}`} key={field.name}>
                   <label htmlFor={field.name}>
                     {t(`settings.fields.${field.labelKey}`)}
-                    {field.optional && <small>{t("settings.optional")}</small>}
+                    {field.optional && !setup && <small>{t("settings.optional")}</small>}
                   </label>
                   {field.options || field.optionKey ? (
                     <NativeSelect
@@ -222,6 +255,7 @@ export function Settings() {
                       ))}
                     </NativeSelect>
                   ) : (
+                    <div className={field.name.startsWith("local_") ? "localPathInput" : undefined}>
                     <input
                       id={field.name}
                       type={field.secret ? "password" : field.type ?? "text"}
@@ -232,9 +266,16 @@ export function Settings() {
                           setClearSecrets((current) => current.filter((name) => name !== field.name)))
                         : setValues((current) => ({ ...current, [field.name]: event.target.value }))}
                       disabled={loading || saving || clearSecrets.includes(field.name)}
-                      required={!field.optional && (!field.secret || !storedSecrets[field.name])}
+                      required={(!field.optional || setup) && (!field.secret || !storedSecrets[field.name])}
                       autoComplete={field.secret ? "new-password" : "off"}
                     />
+                    {field.name.startsWith("local_") && <LocalFolderPicker
+                      value={values[field.name] ?? ""}
+                      label={t(`settings.fields.${field.labelKey}`)}
+                      disabled={loading || saving}
+                      onSelect={(path) => setValues((current) => ({ ...current, [field.name]: path }))}
+                    />}
+                    </div>
                   )}
                   {field.secret && storedSecrets[field.name] && (
                     <span className="secretState">
@@ -255,20 +296,31 @@ export function Settings() {
               </div>
             </fieldset>;
           })}
+          {setup && step === 4 && <div className="setupReview">
+            {steps.slice(0, 4).map((name, index) => <section key={name}>
+              <div className="setupReviewTitle"><h3>{t(`settings.sections.${name}`)}</h3><button type="button" className="textButton" disabled={saving} onClick={() => goToStep(index)}>{t("setup.edit")}</button></div>
+              <dl>{SECTIONS.filter((section) => section.titleKey === name || (name === "storage" && section.titleKey === "webdav")).flatMap((section) => section.fields).filter((field) => fieldIsVisible(field, values)).map((field) => {
+                const value = field.secret ? t("setup.credentialReady") : (field.options ?? (field.optionKey ? options[field.optionKey] : []))?.find((option) => option.value === values[field.name])?.label ?? values[field.name];
+                return <div key={field.name}><dt>{t(`settings.fields.${field.labelKey}`)}</dt><dd>{field.name === "default_subtitle_mode" ? formatSubtitleModeLabel(value, targetLanguageName) : value || "—"}</dd></div>;
+              })}</dl>
+            </section>)}
+            <p>{t("setup.servicesHint")}</p>
+          </div>}
         </div>
         </div>
         <div className="settingsActions">
           <div aria-live="polite">
             {loading && <span>{t("settings.loading")}</span>}
-            {!loading && !error && (dirty
+            {!loading && !error && (setup ? <span>{t("setup.saveHint")}</span> : dirty
               ? <span className="unsaved">{t("settings.unsaved")}</span>
               : message
                 ? <span className="success"><Check size={16} aria-hidden="true" />{message}</span>
                 : <span>{t("settings.upToDate")}</span>)}
             {error && <span className="settingsError" role="alert">{error}</span>}
           </div>
-          <button className="start" type="submit" disabled={loading || saving || !dirty}>
-            {saving ? t("settings.saving") : t("settings.save")}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
+          {setup && step > 0 && <button type="button" className="textButton" disabled={saving} onClick={() => goToStep(step - 1)}>{t("setup.back")}</button>}
+          <button className="start" type="submit" disabled={loading || saving || (!setup && !dirty)}>
+            {saving ? t("settings.saving") : setup ? t(step === 4 ? "setup.finish" : "setup.next") : t("settings.save")}<ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
       </form>

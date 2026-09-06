@@ -1967,12 +1967,39 @@ async def log_validation_error(request: Request, exc: RequestValidationError) ->
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
+@app.get("/api/local-folders")
+def local_folders(path: str = Query(default="")) -> dict[str, Any]:
+    """Browse folders on the Cue host before a media source is configured."""
+    directory = Path(path) if path else Path.home()
+    if not directory.is_absolute():
+        raise HTTPException(status_code=400, detail="Folder path must be absolute")
+    try:
+        directory = directory.resolve(strict=True)
+        if not directory.is_dir():
+            raise HTTPException(status_code=400, detail="Selected path is not a directory")
+        folders = []
+        for child in directory.iterdir():
+            try:
+                if not child.name.startswith(".") and child.is_dir():
+                    folders.append({"name": child.name, "path": str(child)})
+            except OSError:
+                continue
+        return {
+            "path": str(directory),
+            "parent": str(directory.parent) if directory.parent != directory else None,
+            "folders": sorted(folders, key=lambda folder: folder["name"].casefold()),
+        }
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Could not open this folder. Check the path and permissions.") from exc
+
+
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     try:
         values = load_saved_settings()
         secrets = load_saved_secrets()
         return {
+            "setup_required": not (values["local_scan_path"] or values["webdav_endpoint"] or any(secrets.values())),
             "values": values,
             "secrets": {key: key in secrets for key in SECRET_SETTINGS},
             "options": {

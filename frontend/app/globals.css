@@ -234,6 +234,8 @@ h2 { font-size: 20px; font-weight: 600; line-height: 1.3; letter-spacing: -0.015
 .searchField input,
 .renameDialog > form > input,
 .settingField > input,
+.settingField > div > input,
+.folderPickerPath input,
 .nativeSelect > select {
   width: 100%;
   color: var(--foreground);
@@ -249,6 +251,8 @@ h2 { font-size: 20px; font-weight: 600; line-height: 1.3; letter-spacing: -0.015
 .searchField input:focus,
 .renameDialog > form > input:focus,
 .settingField > input:focus,
+.settingField > div > input:focus,
+.folderPickerPath input:focus,
 .nativeSelect > select:focus {
   border-color: var(--ring);
   box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
@@ -678,7 +682,7 @@ footer { padding: var(--space-5) 0 0; color: var(--muted-foreground); font-size:
 .settingFieldSeparated { padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .settingField > label { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); color: var(--foreground); font-size: 13px; font-weight: 500; }
 .settingField > label small { color: var(--muted-foreground); font-size: 11px; font-weight: 500; letter-spacing: .03em; text-transform: uppercase; }
-.settingField > input, .nativeSelect > select { min-height: 40px; padding: 0 var(--space-3); font-size: 13px; }
+.settingField > input, .settingField > div > input, .folderPickerPath input, .nativeSelect > select { min-height: 40px; padding: 0 var(--space-3); font-size: 13px; }
 .nativeSelect { position: relative; display: block; }
 .nativeSelect > select { appearance: none; padding-right: 40px; }
 .nativeSelect > svg { position: absolute; top: 50%; right: 14px; color: var(--muted-foreground); opacity: .5; pointer-events: none; transform: translateY(-50%); user-select: none; }
@@ -734,6 +738,52 @@ footer { padding: var(--space-5) 0 0; color: var(--muted-foreground); font-size:
 footer { font-size: 12px; line-height: 1.6; text-align: left; }
 
 /* Settings: section navigation and independent cards. */
+.localPathInput { position: relative; }
+.settingField > .localPathInput > input { padding-right: 48px; }
+.folderPickerTrigger { position: absolute; right: 4px; top: 4px; width: 36px; height: 36px; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted-foreground); }
+.folderPickerTrigger:hover { color: var(--foreground); background: var(--accent); }
+.folderPickerDialog { width: min(580px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--foreground); box-shadow: var(--shadow-lg); }
+.folderPickerDialog::backdrop { background: #0007; }
+.folderPickerDialog :where(button:not(.start)) { color: var(--foreground); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+.folderPickerDialog button:disabled, .settingsLink:disabled { opacity: .5; cursor: not-allowed; }
+.folderPickerHeader, .folderPickerPath, .folderPickerToolbar, .folderPickerActions { display: flex; align-items: center; gap: 12px; }
+.folderPickerHeader { justify-content: space-between; }
+.folderPickerHeader h2 { margin: 0; font-size: 22px; }
+.folderPickerHeader button { display: grid; place-items: center; padding: 8px; }
+.folderPickerDialog > p { color: var(--muted-foreground); line-height: 1.6; }
+.folderPickerPath { margin: 8px 0 12px; }
+.folderPickerPath input { min-width: 0; flex: 1; }
+.folderPickerPath button, .folderPickerToolbar button, .folderPickerActions button { padding: 10px 12px; }
+.folderPickerToolbar button { display: flex; align-items: center; gap: 8px; }
+.folderPickerList { min-height: 120px; height: min(280px, 32dvh); overflow-y: auto; margin: 16px 0; border-block: 1px solid var(--border); }
+.folderPickerList > button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; text-align: left; border: 0; border-radius: 0; background: transparent; }
+.folderPickerList > button:hover { background: var(--accent); }
+.folderPickerList > button span { overflow-wrap: anywhere; min-width: 0; }
+.folderPickerList svg { flex-shrink: 0; }
+.folderPickerList p { padding: 12px; color: var(--muted-foreground); }
+.folderPickerActions { justify-content: flex-end; }
+.setupSteps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.setupSteps li { display: flex; align-items: center; gap: 10px; color: var(--muted-foreground); padding: 8px; }
+.setupSteps li > span { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 50%; flex-shrink: 0; font-size: 12px; }
+.setupSteps li[aria-current="step"] { color: var(--foreground); font-weight: 600; }
+.setupSteps li[aria-current="step"] > span { background: var(--primary); color: var(--primary-foreground); }
+.setupCard .settingsIntro p { color: var(--muted-foreground); line-height: 1.6; }
+.setupCard .settingsActions > div { flex: 1; }
+.setupReview { display: grid; gap: 20px; }
+.setupReview section { padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.setupReviewTitle { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.setupReviewTitle h3 { margin: 0; }
+.setupReview dl { margin-bottom: 0; }
+.setupReview dl > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 8px 0; }
+.setupReview dt, .setupReview > p { color: var(--muted-foreground); line-height: 1.6; }
+.setupReview dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .setupCard .settingsNav { position: static; display: block; }
+  .setupSteps { flex-direction: row; flex-wrap: wrap; gap: 4px 8px; }
+  .setupSteps li { font-size: 12px; padding: 4px; }
+  .setupCard .settingsActions { flex-wrap: wrap; }
+  .setupCard .settingsActions > div { flex-basis: 100%; }
+}
 .settingsCard { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 40px; align-items: start; }
 .settingsNav { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 4px; }
 .settingsNav > .eyebrow { margin: 0 12px 16px; font-size: 10px; letter-spacing: .1em; }
@@ -754,7 +804,7 @@ footer { font-size: 12px; line-height: 1.6; text-align: left; }
 .sectionFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 24px; }
 .settingField { margin: 0; }
 .settingFieldSeparated { padding: 0; border: 0; }
-.settingField > input, .nativeSelect > select { min-height: 44px; background: var(--background); }
+.settingField > input, .settingField > div > input, .folderPickerPath input, .nativeSelect > select { min-height: 44px; background: var(--background); }
 .secretState { min-height: 24px; }
 .settingsActions { position: fixed; z-index: 30; bottom: 20px; left: max(24px, calc((100vw - 1200px) / 2)); right: max(24px, calc((100vw - 1200px) / 2)); padding: 16px 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-lg); }
 .settingsActions > div { min-width: 0; line-height: 1.5; }
@@ -855,7 +905,7 @@ footer { font-size: 12px; line-height: 1.6; text-align: left; }
   .settingsGrid fieldset { padding: 20px 16px; scroll-margin-top: 80px; }
   .sectionFields { grid-template-columns: 1fr; gap: 20px; }
   .sectionDescription { font-size: 12px; margin-bottom: 20px; }
-  .settingField > input, .nativeSelect > select, .renameDialog > form > input { font-size: 16px; }
+  .settingField > input, .settingField > div > input, .folderPickerPath input, .nativeSelect > select, .renameDialog > form > input { font-size: 16px; }
   .settingsActions { left: 0; right: 0; bottom: 0; border-radius: 16px 16px 0 0; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); gap: 12px; }
   .settingsActions .start { min-width: 150px; }
   .settingsActions > div { font-size: 12px; }

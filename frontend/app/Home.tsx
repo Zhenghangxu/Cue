@@ -102,6 +102,7 @@ type Health = {
 
 type Option = { value: string; label: string };
 type SettingsResponse = {
+  setup_required: boolean;
   values: Record<string, string>;
   options: { target_languages: Option[]; subtitle_modes: Option[] };
 };
@@ -280,7 +281,11 @@ export function Home() {
       });
 
     api<SettingsResponse>("/api/settings")
-      .then(({ values, options }) => {
+      .then(({ values, options, setup_required }) => {
+        if (setup_required) {
+          window.location.replace(`${i18n.language === "en" ? "" : `/${i18n.language}`}/settings/`);
+          return;
+        }
         setSubtitleModes(options.subtitle_modes);
         setTargetLanguageName(
           options.target_languages.find(({ value }) => value === values.target_language)?.label
@@ -298,7 +303,7 @@ export function Home() {
       ?? "").split(",").filter(Boolean);
     if (remembered.length) Promise.all(remembered.map((id) => api<Job>(`/api/jobs/${id}`).catch(() => null)))
       .then((values) => setJobs(values.filter((value): value is Job => Boolean(value))));
-  }, [t]);
+  }, [t, i18n.language]);
 
   useEffect(() => {
     const active = jobs.filter((job) => !TERMINAL.has(job.status));

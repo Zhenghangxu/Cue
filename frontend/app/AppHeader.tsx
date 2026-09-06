@@ -9,10 +9,12 @@ export function AppHeader({
   page = "home",
   jobsControl,
   refreshControl,
+  mediaDisabled = false,
 }: {
   page?: "home" | "settings";
   jobsControl?: ReactNode;
   refreshControl?: ReactNode;
+  mediaDisabled?: boolean;
 }) {
   const { t, i18n } = useT("common");
   const settingsPage = page === "settings";
@@ -32,13 +34,15 @@ export function AppHeader({
         <ThemeToggle />
         {refreshControl}
         {jobsControl}
-        <Link className="settingsLink" href={settingsPage ? `${localePrefix}/` : `${localePrefix}/settings/`}>
+        {settingsPage && mediaDisabled ? <button className="settingsLink" type="button" disabled title={t("setup.finishFirst")}>
+          <ArrowLeft size={16} strokeWidth={1.75} /><span>{t("header.media")}</span>
+        </button> : <Link className="settingsLink" href={settingsPage ? `${localePrefix}/` : `${localePrefix}/settings/`}>
           {settingsPage
             ? <ArrowLeft size={16} strokeWidth={1.75} />
             : <Settings size={16} strokeWidth={1.75} />}
           <span>{settingsPage ? t("header.media") : t("header.settings")}</span>
           {!settingsPage && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
-        </Link>
+        </Link>}
       </div>
     </header>
   );
