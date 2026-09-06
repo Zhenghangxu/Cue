@@ -94,6 +94,12 @@ HASH_BLOCK_SIZE = 64 * 1024
 MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 MAX_DIRECTORY_BYTES = 5 * 1024 * 1024
 DEV_ORIGINS = ["http://127.0.0.1:3000", "http://localhost:3000"]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost"] + [
+    value.strip() for value in os.environ.get("CUE_ALLOWED_HOSTS", "").split(",") if value.strip()
+]
+ALLOWED_ORIGINS = DEV_ORIGINS + [
+    value.strip().rstrip("/") for value in os.environ.get("CUE_ALLOWED_ORIGINS", "").split(",") if value.strip()
+]
 TERMINAL_STAGES = {"completed", "failed"}
 DIRECTORY_CACHE_TTL_SECONDS = 5 * 60
 DIRECTORY_CACHE_MAX_ENTRIES = 128
@@ -1466,11 +1472,35 @@ def smart_rename(
         raise PipelineError("AI returned an invalid rename plan") from exc
 
     changes = [item for item in renames if item["from"] != item["to"]]
+    moves = []
     for item in changes:
+        original = PurePosixPath(item["from"])
+        renamed = PurePosixPath(item["to"])
+        for subtitle in source.sidecars(item["from"]):
+            # Preserve language, forced/SDH tags, and subtitle extension.
+            name = renamed.stem + subtitle.name[len(original.stem):]
+            moves.append({"from": subtitle.path, "to": str(original.with_name(name))})
+        moves.append(item)
+    if len({item["to"] for item in moves}) != len(moves) or len({item["from"] for item in moves}) != len(moves):
+        raise PipelineError("The rename plan contains overlapping video or subtitle paths")
+    for item in moves:
         if source.exists(item["to"]):
             raise PipelineError(f"A file already exists at {item['to']}")
-    for item in changes:
-        source.move(item["from"], item["to"])
+    completed = []
+    try:
+        for item in moves:
+            source.move(item["from"], item["to"])
+            completed.append(item)
+    except Exception as exc:
+        rollback_failed = []
+        for item in reversed(completed):
+            try:
+                source.move(item["to"], item["from"])
+            except Exception:
+                rollback_failed.append(item["to"])
+        if rollback_failed:
+            raise PipelineError("Rename failed; could not restore: " + ", ".join(rollback_failed)) from exc
+        raise PipelineError(f"Rename failed; earlier moves were restored: {exc}") from exc
     return changes
 
 
@@ -1853,9 +1883,14 @@ def update_job(job_id: str, item_index: int, stage: str, message: str) -> None:
         job.message = f"{item_index + 1} of {len(job.items)} · {PurePosixPath(item.path).name} · {message}"
 
 
-def run_job(job_id: str) -> None:
+def run_job(
+    job_id: str,
+    services: tuple[Config, MediaSource, SubtitleDestination, OpenSubtitles] | None = None,
+) -> None:
     try:
-        config, source, destination, opensubtitles = require_services()
+        # Keep credentials and service objects out of the serialized Job. The
+        # executor retains this snapshot only until the queued work completes.
+        config, source, destination, opensubtitles = services if services is not None else require_services()
         ai = OpenAI(
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
@@ -1962,10 +1997,10 @@ def run_job(job_id: str) -> None:
 
 
 app = FastAPI(title="Cue", version="0.1.0")
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"], www_redirect=False)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS, www_redirect=False)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=DEV_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
@@ -1981,7 +2016,7 @@ async def protect_local_api(request: Request, call_next: Callable[[Request], Any
     # CORS controls which responses browsers may read; it does not reject all
     # cross-origin requests before they can change files or settings.
     origin = request.headers.get("origin")
-    if origin is not None and origin not in {*DEV_ORIGINS, str(request.base_url).rstrip("/")}:
+    if origin is not None and origin not in {*ALLOWED_ORIGINS, str(request.base_url).rstrip("/")}:
         return JSONResponse(status_code=403, content={"detail": "Untrusted request origin"})
     if origin is None and request.headers.get("sec-fetch-site") == "cross-site":
         return JSONResponse(status_code=403, content={"detail": "Cross-site requests are not allowed"})
@@ -2255,7 +2290,7 @@ def quota() -> dict[str, int]:
 
 @app.post("/api/rename", status_code=202)
 def rename_files(body: RenameRequest) -> dict[str, str]:
-    require_services()
+    services = require_services()
     title = body.title.strip()
     if not body.paths:
         raise HTTPException(status_code=400, detail="Select at least one video")
@@ -2285,13 +2320,14 @@ def rename_files(body: RenameRequest) -> dict[str, str]:
             rename_title=title,
         )
         JOBS[job.id] = job
-    EXECUTOR.submit(run_job, job.id)
+    EXECUTOR.submit(run_job, job.id, services)
     return {"jobId": job.id}
 
 
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobRequest) -> dict[str, str]:
-    config, _, _, _ = require_services()
+    services = require_services()
+    config, _, _, _ = services
     if not body.paths:
         raise HTTPException(status_code=400, detail="Select at least one video")
     try:
@@ -2321,7 +2357,7 @@ def create_job(body: JobRequest) -> dict[str, str]:
             subtitle_mode=mode,
         )
         JOBS[job.id] = job
-    EXECUTOR.submit(run_job, job.id)
+    EXECUTOR.submit(run_job, job.id, services)
     return {"jobId": job.id}
 
 

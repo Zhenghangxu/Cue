@@ -41,6 +41,8 @@ Browse to a folder, select one or more videos, and start a job. Cue prefers exis
 
 Output names include the language: `Movie.es.srt` or `Movie.es.en.srt` for bilingual subtitles. Name collisions receive a numeric suffix.
 
+- Smart Rename also renames matching subtitle files beside the video, preserving language and forced/SDH tags. It checks all destination names before moving files and attempts to restore earlier moves if a later move fails. NFO files, artwork, and subtitles in a separate output folder are not renamed.
+- Queued jobs keep the media source, output destination, and credentials selected when submitted, even if Settings changes before they run.
 - Local paths belong to the **machine running Cue**. Use absolute, existing, readable and writable directories. Local Smart Rename requires hard-link support.
 - WebDAV synchronization decodes **15 seconds of 8 kHz mono audio once**, then aligns subtitles using that audio in memory. Four bounded range reads overlap to reduce network latency, and signed download URLs are reused within a job. When readable SRT cues indicate a silent intro, the sample starts five seconds before the first cue (up to three minutes into the video). This fast mode corrects timing offsets; it does not attempt frame-rate drift correction from a short sample.
 - **No video or audio cache files are written to disk.** Remote reads use up to 16 MiB of RAM cache and at most **32 MiB or one quarter of the video size**, whichever is smaller, including rereads. Subtitle matching separately reads 128 KiB for the hash. Small subtitle files are still saved normally. The operating system manages RAM and may swap it.
@@ -49,6 +51,34 @@ Output names include the language: `Movie.es.srt` or `Movie.es.en.srt` for bilin
 - Cue runs on **localhost / 127.0.0.1**. Keep the server running while using it.
 
 To use Cue in its own window, open the production app and choose your browser's **Install Cue** action, or **File → Add to Dock** in macOS Safari. The installed app still requires the server; uninstalling it preserves server settings.
+
+## Running on a trusted private network
+
+Cue has no application login. Restrict access to your own trusted devices using your private network's access controls. Run one server process, preferably under a dedicated non-root account with access only to the required media folders.
+
+Build once with `npm run build`, then bind to the server's private-network IP (replace the example address and hostname):
+
+```sh
+UVICORN_HOST=100.101.102.103 \
+CUE_ALLOWED_HOSTS=100.101.102.103,media-server.example.ts.net \
+npm start
+```
+
+Open `http://100.101.102.103:3666/` or the configured hostname. `CUE_ALLOWED_HOSTS` is a comma-separated list of exact hostnames/IPs without schemes or ports. Localhost remains allowed; the default bind address remains `127.0.0.1`. Production builds use the page's origin for API requests; leave `NEXT_PUBLIC_API_BASE_URL` unset when building.
+
+For a reverse proxy on the same machine, keep the localhost bind and configure the public hostname. If the proxy rewrites the upstream Host header to localhost, also explicitly allow the browser's origin:
+
+```sh
+CUE_ALLOWED_HOSTS=media-server.example.ts.net \
+CUE_ALLOWED_ORIGINS=https://media-server.example.ts.net \
+npm start
+```
+
+Origins include the scheme and any non-default port, separated by commas. Keep the proxy's upstream connection private and serve Cue at `/` on its own hostname. Network allowlists do not provide user authentication. Use HTTPS for installed-app/offline support on remote devices.
+
+Local folders refer to the server's filesystem. For containers, mount the media folders with the required write permissions and persist the service user's `~/.config/subtitle-maker/` directory. The “open folder” and “open credentials” actions launch a file manager on the server and require a desktop session.
+
+Jobs remain in memory: restarting loses their status and queue, and multiple workers/replicas are unsupported. Other browser sessions do not automatically discover existing jobs.
 
 ## Development
 

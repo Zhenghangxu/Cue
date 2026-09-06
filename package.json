@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "npm --prefix frontend run build",
-    "start": "uv run uvicorn backend.app:app --host 127.0.0.1 --port 3666",
+    "start": "uv run uvicorn backend.app:app --port 3666 --workers 1",
     "prod": "npm run build && npm start"
   }
 }

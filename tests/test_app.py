@@ -1200,6 +1200,9 @@ class BatchJobTests(unittest.TestCase):
             def exists(self, _):
                 return False
 
+            def sidecars(self, _):
+                return []
+
             def move(self, source, destination):
                 self.moves.append((source, destination))
 
@@ -1225,8 +1228,9 @@ class BatchJobTests(unittest.TestCase):
             openai_rename_reasoning_effort="high",
         )
         paths = ["Shows/obscure.01.1080p.mkv", "Shows/obscure.02.1080p.mkv"]
+        services = (rename_config, webdav, webdav, object())
         with (
-            patch("backend.app.require_services", return_value=(rename_config, webdav, webdav, object())),
+            patch("backend.app.require_services", return_value=services),
             patch("backend.app.OpenAI", return_value=ai),
             patch("backend.app.EXECUTOR.submit") as submit,
             patch("backend.app.update_job", wraps=update_job) as progress,
@@ -1235,8 +1239,8 @@ class BatchJobTests(unittest.TestCase):
             job = JOBS[result["jobId"]]
             self.assertEqual(job.kind, "rename")
             self.assertEqual(job.rename_title, "game of throne")
-            submit.assert_called_once_with(run_job, job.id)
-            run_job(job.id)
+            submit.assert_called_once_with(run_job, job.id, services)
+            run_job(job.id, services)
 
         self.assertEqual(webdav.moves, [
             (paths[0], "Shows/Game.of.Thrones.S01E01.1080p.mkv"),
