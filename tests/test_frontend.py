@@ -9,6 +9,30 @@ from backend.frontend import FrontendFiles
 
 
 class FrontendRoutingTests(unittest.TestCase):
+    def test_pwa_assets_have_correct_types_and_revalidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path, content in {
+                "sw.js": "self.addEventListener('fetch', () => {});",
+                "manifest.webmanifest": '{"name":"Cue"}',
+                "offline.html": "<!doctype html><title>Cue offline</title>",
+            }.items():
+                (root / path).write_text(content)
+            app = FastAPI()
+            app.mount("/", FrontendFiles(directory=root, html=True))
+            with TestClient(app) as client:
+                for path, content_type in {
+                    "/sw.js": "application/javascript",
+                    "/manifest.webmanifest": "application/manifest+json",
+                    "/offline.html": "text/html",
+                }.items():
+                    response = client.get(path)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.headers["content-type"].startswith(content_type))
+                    self.assertEqual(response.headers["cache-control"], "no-cache")
+                    if path == "/sw.js":
+                        self.assertEqual(response.headers["service-worker-allowed"], "/")
+
     def test_deep_links_and_static_routes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

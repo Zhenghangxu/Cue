@@ -9,6 +9,10 @@ import {
   initServerI18next,
 } from "next-i18next/server";
 import i18nConfig, { defaultLocale, isSupportedLocale } from "../../i18n.config";
+import { pwaMetadata } from "../pwaMetadata";
+import { ThemeColor } from "../ThemeColor";
+import { ServiceWorker } from "../ServiceWorker";
+import { themeScript } from "../theme";
 import "../styles/tokens.scss";
 import "../globals.css";
 
@@ -23,16 +27,6 @@ const geistMono = Geist_Mono({
   display: "swap",
   variable: "--font-geist-mono",
 });
-
-const themeScript = `
-  try {
-    const stored = localStorage.getItem("cue-theme");
-    const theme = stored === "light" || stored === "dark"
-      ? stored
-      : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    document.documentElement.dataset.theme = theme;
-  } catch (_) {}
-`;
 
 initServerI18next(i18nConfig);
 
@@ -51,6 +45,7 @@ export async function generateMetadata({
   if (!isSupportedLocale(lng)) notFound();
   const { t } = await getT("common", { lng });
   return {
+    ...pwaMetadata,
     title: t("appName"),
     description: t("meta.description"),
   };
@@ -74,6 +69,8 @@ export default async function LocalizedRootLayout({
     <html lang={lng} suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable}`}>
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
       <body>
+        <ThemeColor />
+        <ServiceWorker />
         <I18nProvider
           language={lng}
           resources={resources}

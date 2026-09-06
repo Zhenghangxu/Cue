@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f7f8" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#101615" media="(prefers-color-scheme: dark)">
+    <title>Cue · Unable to connect</title>
+    <style>
+      :root { color-scheme: light; --bg: #f5f7f8; --fg: #182825; --muted: #63716d; --surface: #fff; --border: #dfe7e3; }
+      @media (prefers-color-scheme: dark) {
+        :root { color-scheme: dark; --bg: #101615; --fg: #edf3ef; --muted: #a2b2aa; --surface: #19211f; --border: #303d37; }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; min-height: 100svh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, sans-serif; }
+      main { width: 100%; max-width: 460px; padding: 32px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+      svg { width: 64px; height: 64px; color: #278060; }
+      h1 { font-size: 26px; line-height: 1.25; margin: 16px 0; }
+      p { color: var(--muted); }
+      button { min-height: 44px; padding: 10px 20px; border: 0; border-radius: 8px; background: #176b4d; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+      button:focus-visible { outline: 3px solid #278060; outline-offset: 4px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor" role="img" aria-label="Cue">
+        <path d="M184 48H96C69.49 48 48 69.49 48 96V160C48 186.51 69.49 208 96 208H184L152 176H96C87.16 176 80 168.84 80 160V96C80 87.16 87.16 80 96 80H152L184 48Z"/>
+        <rect x="112" y="104" width="96" height="16" rx="8"/>
+        <rect x="112" y="136" width="64" height="16" rx="8"/>
+      </svg>
+      <h1 id="title">Unable to connect to Cue</h1>
+      <p id="message">Make sure the Cue server is running on this computer, then try again. Browsing your library and processing subtitles require a connection to the server.</p>
+      <button id="retry" type="button">Try again</button>
+    </main>
+    <script>
+      if (/^\/zh(?:\/|$)/.test(location.pathname)) {
+        document.documentElement.lang = "zh";
+        document.title = "Cue · 无法连接";
+        document.getElementById("title").textContent = "无法连接到 Cue";
+        document.getElementById("message").textContent = "请确认此电脑上的 Cue 服务正在运行，然后重试。浏览媒体库和处理字幕需要连接到服务。";
+        document.getElementById("retry").textContent = "重试";
+      }
+      document.getElementById("retry").addEventListener("click", () => {
+        if (location.pathname === "/offline.html") location.replace("/");
+        else location.reload();
+      });
+    </script>
+  </body>
+</html>

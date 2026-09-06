@@ -3,6 +3,10 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { I18nProvider } from "next-i18next/client";
 import { getResources, getT, initServerI18next } from "next-i18next/server";
 import i18nConfig, { defaultLocale } from "../../i18n.config";
+import { pwaMetadata } from "../pwaMetadata";
+import { ThemeColor } from "../ThemeColor";
+import { ServiceWorker } from "../ServiceWorker";
+import { themeScript } from "../theme";
 import "../styles/tokens.scss";
 import "../globals.css";
 
@@ -20,17 +24,8 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
 });
 
-const themeScript = `
-  try {
-    const stored = localStorage.getItem("cue-theme");
-    const theme = stored === "light" || stored === "dark"
-      ? stored
-      : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    document.documentElement.dataset.theme = theme;
-  } catch (_) {}
-`;
-
 export const metadata: Metadata = {
+  ...pwaMetadata,
   title: "Cue",
   description: "Create and synchronize multilingual subtitles from your video library",
 };
@@ -43,6 +38,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang={defaultLocale} suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable}`}>
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
       <body>
+        <ThemeColor />
+        <ServiceWorker />
         <I18nProvider
           language={defaultLocale}
           resources={resources}

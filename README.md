@@ -53,6 +53,14 @@ npm run prod
 
 Open <http://127.0.0.1:3666>. This builds the frontend's static production export, then starts FastAPI, which serves both the API and frontend. Run `npm start` when the frontend is already built and you only need to restart the server.
 
+## Install as an app
+
+Run the production build with `npm run prod`, open <http://127.0.0.1:3666/>, and use your browser's **Install Cue** action (usually in the address bar or menu). On macOS Safari, use **File → Add to Dock**. Cue opens in its own window with its app icon. Installation is available on supported browsers; loopback HTTP works without a certificate. Other origins require HTTPS, and Cue's backend currently accepts only loopback hosts.
+
+Keep the Cue server running when using the installed app. After the first online visit enables the service worker, opening Cue while the server is stopped or unreachable shows an English or Chinese connection screen with a retry button. The worker caches only that self-contained screen; credentials, API responses, library contents, and media are never stored in its cache. Subtitle jobs still require the backend and their configured services.
+
+Service worker registration is disabled in `next dev`. Production pages and assets load from the network, so rebuilds are not held in an app-shell cache. Worker updates take over after existing Cue windows close; bump `CACHE_NAME` in `frontend/public/sw.js` when changing `offline.html` so the new fallback is installed.
+
 ## Checks
 
 ```sh

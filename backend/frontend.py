@@ -9,6 +9,13 @@ class FrontendFiles(StaticFiles):
         try:
             response = await super().get_response(path, scope)
             if response.status_code != 404:
+                if path.strip("/") in {"sw.js", "manifest.webmanifest", "offline.html"}:
+                    response.headers["Cache-Control"] = "no-cache"
+                if path.strip("/") == "sw.js":
+                    response.headers["Content-Type"] = "application/javascript; charset=utf-8"
+                    response.headers["Service-Worker-Allowed"] = "/"
+                elif path.strip("/") == "manifest.webmanifest":
+                    response.headers["Content-Type"] = "application/manifest+json"
                 return response
         except HTTPException as exc:
             if exc.status_code != 404:
