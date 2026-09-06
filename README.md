@@ -5,7 +5,7 @@
 Cue is a local web app for videos on WebDAV or your own filesystem. Choose a language, select your videos, and let Cue handle the subtitles.
 
 - **Find subtitles** from existing sidecar files or OpenSubtitles.
-- **Sync locally** using a five-minute audio sample.
+- **Sync locally** using a short audio sample (15 seconds for WebDAV).
 - **Translate English** through a configurable Chat Completions endpoint, with target-only or bilingual output.
 - **Process multiple videos** in sequence; one failed video won't stop the rest.
 - **Keep your library organized** with language-tagged filenames and Smart Rename. Existing subtitle files are never overwritten.
@@ -42,7 +42,9 @@ Browse to a folder, select one or more videos, and start a job. Cue prefers exis
 Output names include the language: `Movie.es.srt` or `Movie.es.en.srt` for bilingual subtitles. Name collisions receive a numeric suffix.
 
 - Local paths belong to the **machine running Cue**. Use absolute, existing, readable and writable directories. Local Smart Rename requires hard-link support.
-- WebDAV synchronization downloads the **entire video** to temporary storage. Allow enough disk space; the temporary file is deleted afterward.
+- WebDAV synchronization decodes **15 seconds of 8 kHz mono audio once**, then aligns subtitles using that audio in memory. Four bounded range reads overlap to reduce network latency, and signed download URLs are reused within a job. When readable SRT cues indicate a silent intro, the sample starts five seconds before the first cue (up to three minutes into the video). This fast mode corrects timing offsets; it does not attempt frame-rate drift correction from a short sample.
+- **No video or audio cache files are written to disk.** Remote reads use up to 16 MiB of RAM cache and at most **32 MiB or one quarter of the video size**, whichever is smaller, including rereads. Subtitle matching separately reads 128 KiB for the hash. Small subtitle files are still saved normally. The operating system manages RAM and may swap it.
+- Remote audio extraction stops after 45 seconds of wall time; subsequent alignment has a 20-second limit. Servers must support byte ranges. Unsupported servers or videos that exceed the limits fail without falling back to a full download. Interleaved video/audio still requires some video bytes; WebDAV does not provide server-side quality conversion. Local videos retain the five-minute synchronization behavior.
 - Settings and credentials are stored in `~/.config/subtitle-maker/config.json`. Saved credentials are not returned to the browser.
 - Cue runs on **localhost / 127.0.0.1**. Keep the server running while using it.
 

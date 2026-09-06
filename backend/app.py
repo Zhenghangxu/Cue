@@ -31,7 +31,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from guessit import guessit
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -39,6 +39,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.frontend import FrontendFiles
 from backend.config_storage import config_path
+from backend.media_range import MediaReadError, remote_media, memory_media
+from backend.audio_sample import extract_audio, sample_start
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = config_path(Path.home())
@@ -616,10 +618,6 @@ def batch_cues(cues: list[tuple[int, srt.Subtitle]]) -> list[list[tuple[int, srt
     return batches
 
 
-MEDIA_TOKENS: dict[str, tuple["WebDAV", str]] = {}
-MEDIA_TOKENS_LOCK = threading.Lock()
-
-
 class WebDAV:
     def __init__(
         self,
@@ -855,47 +853,40 @@ class WebDAV:
     @contextmanager
     def sync_input(self, relative: str) -> Iterator[str]:
         relative = normalize_relative(relative)
-        # A single download lets ffsubsync probe and analyze the same local
-        # bytes without reopening the remote video. Nothing survives this job.
-        with tempfile.TemporaryDirectory(prefix="cue-media-") as directory:
-            local = Path(directory) / ("video" + PurePosixPath(relative).suffix)
-            deadline = time.monotonic() + 15 * 60
-            try:
-                response = self._open_media(relative, {"Accept-Encoding": "identity"})
-                try:
-                    if response.status_code != 200:
-                        raise PipelineError(f"WebDAV video download failed ({response.status_code})")
-                    length = response.headers.get("content-length")
-                    expected = int(length) if length is not None else None
-                    downloaded = 0
-                    with local.open("wb") as output:
-                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                            if time.monotonic() > deadline:
-                                raise PipelineError("Video download timed out")
-                            output.write(chunk)
-                            downloaded += len(chunk)
-                    if not downloaded or (expected is not None and downloaded != expected):
-                        raise PipelineError("WebDAV returned an incomplete video download")
-                finally:
-                    response.close()
-            except httpx.HTTPError as exc:
-                raise PipelineError("WebDAV video download failed") from exc
-            except ValueError as exc:
-                raise PipelineError("WebDAV returned an invalid video length") from exc
-            except OSError as exc:
-                raise PipelineError("Could not save the temporary video; check available disk space") from exc
-            yield str(local)
+        size = self.file_info(relative).size
+        if not size or size < 0:
+            raise PipelineError("WebDAV returned an invalid video length")
+        resolved_url: str | None = None
+        resolved_client = self.client
+        resolution_lock = threading.Lock()
 
-    def stream(self, relative: str, range_header: str | None) -> httpx.Response:
-        headers = {"Range": range_header} if range_header else {}
-        response = self._open_media(relative, headers)
-        if range_header and response.status_code != 206:
-            response.close()
-            raise PipelineError("WebDAV ignored a media range request")
-        if response.status_code not in {200, 206}:
-            response.close()
-            raise PipelineError(f"WebDAV media request failed ({response.status_code})")
-        return response
+        def open_range(headers: dict[str, str]) -> httpx.Response:
+            nonlocal resolved_url, resolved_client
+            with resolution_lock:
+                if resolved_url is None:
+                    response = self._open_media(relative, headers)
+                    resolved_url = str(response.url)
+                    resolved_client = self.media_client if resolved_url != self.url_for(relative) else self.client
+                    return response
+            if resolved_url:
+                # Reuse the signed CDN URL for this job instead of asking the
+                # WebDAV server to resolve it again for every small range.
+                request = resolved_client.build_request("GET", resolved_url, headers=headers, timeout=10)
+                response = resolved_client.send(request, stream=True, follow_redirects=False)
+                if response.status_code not in {401, 403}:
+                    return response
+                response.close()
+            with resolution_lock:
+                response = self._open_media(relative, headers)
+                resolved_url = str(response.url)
+                resolved_client = self.media_client if resolved_url != self.url_for(relative) else self.client
+            return response
+
+        try:
+            with remote_media(size, PurePosixPath(relative).suffix, open_range) as url:
+                yield url
+        except MediaReadError as exc:
+            raise PipelineError(str(exc)) from exc
 
     def read_small(self, relative: str, limit: int = MAX_SUBTITLE_BYTES) -> bytes:
         response = self._open_media(relative, {})
@@ -1620,30 +1611,42 @@ def sync_subtitle(video_input: str, input_path: Path, output_path: Path, _: Conf
     executable = shutil.which("ffsubsync")
     if not executable:
         raise PipelineError("ffsubsync is not installed; run `uv sync`")
+    remote = video_input.startswith("http://127.0.0.1:")
     try:
-        result = subprocess.run(
-            [
-                executable,
-                video_input,
-                "-i",
-                str(input_path),
-                "-o",
-                str(output_path),
-                "--max-duration-seconds",
-                "300",
-                "--frame-rate",
-                "16000",
-                "--skip-sync-on-low-quality",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=15 * 60,
-            check=False,
-        )
+        # Only the decoder touches the remote video. ffsubsync's repeated
+        # probing and audio analysis use the small in-memory WAV reference.
+        reference = memory_media(extract_audio(video_input, sample_start(input_path))) if remote else nullcontext(video_input)
+        with reference as sync_input:
+            result = subprocess.run(
+                [
+                    executable,
+                    sync_input,
+                    "-i",
+                    str(input_path),
+                    "-o",
+                    str(output_path),
+                    "--max-duration-seconds",
+                    # Includes at most 180s of synthesized silence before the
+                    # 15s sample, preserving timestamps after skipping an intro.
+                    "195" if remote else "300",
+                    "--frame-rate",
+                    "8000" if remote else "16000",
+                    "--skip-sync-on-low-quality",
+                    # A short sample can establish an offset, but cannot reliably
+                    # establish frame-rate drift over a whole movie.
+                    *(["--reference-stream", "0:a:0", "--no-fix-framerate", "--skip-infer-framerate-ratio"] if remote else []),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20 if remote else 15 * 60,
+                check=False,
+            )
         if result.returncode or not output_path.exists() or not output_path.stat().st_size:
             raise PipelineError("Subtitle synchronization failed")
     except subprocess.TimeoutExpired as exc:
         raise PipelineError("Subtitle synchronization timed out") from exc
+    except MediaReadError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 def process_video(
@@ -1754,14 +1757,14 @@ def process_video(
                 )
                 progress("synchronizing", "Exact video match; synchronization not needed")
             except (UnicodeDecodeError, ValueError, srt.SRTParseError):
-                progress("synchronizing", "Preparing video for local synchronization")
+                progress("synchronizing", "Preparing video for bounded audio synchronization")
                 with source.sync_input(relative) as video_input:
-                    progress("synchronizing", "Matching subtitles against a local five-minute audio sample")
+                    progress("synchronizing", "Matching subtitles against a short audio sample")
                     syncer(video_input, subtitle_source, synced, config)
         else:
-            progress("synchronizing", "Preparing video for local synchronization")
+            progress("synchronizing", "Preparing video for bounded audio synchronization")
             with source.sync_input(relative) as video_input:
-                progress("synchronizing", "Matching subtitles against a local five-minute audio sample")
+                progress("synchronizing", "Matching subtitles against a short audio sample")
                 syncer(video_input, subtitle_source, synced, config)
         usage = {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
         if candidate.language == "en":
@@ -2329,35 +2332,6 @@ def get_job(job_id: str) -> dict[str, Any]:
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
         return asdict(job)
-
-
-@app.api_route("/internal/media/{token}", methods=["GET", "HEAD"], include_in_schema=False)
-def media_proxy(token: str, request: Request) -> Response:
-    with MEDIA_TOKENS_LOCK:
-        media = MEDIA_TOKENS.get(token)
-    if not media:
-        raise HTTPException(status_code=404, detail="Media token expired")
-    webdav, relative = media
-    try:
-        upstream = webdav.stream(relative, request.headers.get("range"))
-    except PipelineError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    headers = {
-        key: value
-        for key in ("content-length", "content-range", "accept-ranges", "content-type")
-        if (value := upstream.headers.get(key))
-    }
-    if request.method == "HEAD":
-        upstream.close()
-        return Response(status_code=upstream.status_code, headers=headers)
-
-    def body() -> Iterable[bytes]:
-        try:
-            yield from upstream.iter_bytes()
-        finally:
-            upstream.close()
-
-    return StreamingResponse(body(), status_code=upstream.status_code, headers=headers)
 
 
 frontend_out = BASE_DIR / "frontend" / "out"
