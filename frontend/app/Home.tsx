@@ -19,6 +19,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   Folder,
   ListTodo,
   LoaderCircle,
@@ -31,7 +32,11 @@ import {
 } from "lucide-react";
 import { useT } from "next-i18next/client";
 import { usePathname } from "next/navigation";
-import { directoryFromPathname, directoryPathname } from "./directoryRouting";
+import {
+  directoryFromPathname,
+  directoryPathname,
+  rememberMediaDirectory,
+} from "./directoryRouting";
 import { AppHeader } from "./AppHeader";
 import {
   accumulateAiUsage,
@@ -180,6 +185,8 @@ export function Home() {
   const [starting, setStarting] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [path, setPath] = useState("");
+  const [location, setLocation] = useState("");
+  const [openingFolder, setOpeningFolder] = useState(false);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<EntrySort>({ key: "modified", direction: "desc" });
@@ -213,6 +220,7 @@ export function Home() {
     setRefreshing(refresh);
     setLoading(!refresh);
     setError("");
+    setLocation("");
     if (resetView) {
       setPath(nextPath);
       setEntries([]);
@@ -220,12 +228,14 @@ export function Home() {
       setQuery("");
     }
     try {
-      const data = await api<{ path: string; entries: FileEntry[] }>(
+      const data = await api<{ path: string; entries: FileEntry[]; location: string }>(
         `/api/files?path=${encodeURIComponent(nextPath)}${refresh ? "&refresh=true" : ""}`,
       );
       if (request !== directoryRequest.current) return;
       setPath(data.path);
       setEntries(data.entries);
+      setLocation(data.location);
+      rememberMediaDirectory(sessionStorage, data.path);
     } catch (reason) {
       if (request !== directoryRequest.current) return;
       setError(reason instanceof Error ? reason.message : t("home.errors.loadDirectory"));
@@ -240,6 +250,18 @@ export function Home() {
   function navigateDirectory(nextPath: string) {
     const href = directoryPathname(nextPath, i18n.language);
     if (window.location.pathname !== href) window.history.pushState(null, "", href);
+  }
+
+  async function openLocalFolder() {
+    setOpeningFolder(true);
+    setError("");
+    try {
+      await api(`/api/folders/open?path=${encodeURIComponent(path)}`, { method: "POST" });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("home.openFolderError"));
+    } finally {
+      setOpeningFolder(false);
+    }
   }
 
   useEffect(() => {
@@ -593,23 +615,31 @@ export function Home() {
       )}
 
       <section className="workspace" aria-label={t("home.browserLabel", { source: sourceType === "local" ? t("home.local") : "WebDAV" })}>
-        <nav className="breadcrumbs" aria-label={t("home.directoryPath")}>
-          {path && <button className="parentFolder" type="button" disabled={loading} aria-label={t("home.parentFolder")} onClick={() => navigateDirectory(crumbs.at(-2)?.path ?? "")}><ArrowLeft size={16} aria-hidden="true" /></button>}
-          {crumbs.map((crumb, index) => (
-            <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
-              {index > 0 && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
-              <button
-                type="button"
-                title={crumb.name}
-                onClick={() => navigateDirectory(crumb.path)}
-                disabled={loading}
-                aria-current={index === crumbs.length - 1 ? "page" : undefined}
-              >
-                {index === 0 && <HardDrive size={14} aria-hidden="true" />}{crumb.name}
-              </button>
-            </span>
-          ))}
-        </nav>
+        <div className="directoryHeader">
+          <nav className="breadcrumbs" aria-label={t("home.directoryPath")}>
+            {path && <button className="parentFolder" type="button" disabled={loading} aria-label={t("home.parentFolder")} onClick={() => navigateDirectory(crumbs.at(-2)?.path ?? "")}><ArrowLeft size={16} aria-hidden="true" /></button>}
+            {crumbs.map((crumb, index) => (
+              <span className={index === crumbs.length - 1 ? "current" : undefined} key={crumb.path || "root"}>
+                {index > 0 && <ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" />}
+                <button
+                  type="button"
+                  title={crumb.name}
+                  onClick={() => navigateDirectory(crumb.path)}
+                  disabled={loading}
+                  aria-current={index === crumbs.length - 1 ? "page" : undefined}
+                >
+                  {index === 0 && <HardDrive size={14} aria-hidden="true" />}{crumb.name}
+                </button>
+              </span>
+            ))}
+          </nav>
+          {sourceType === "local" && (
+            <button className="openFolderButton" type="button" onClick={() => void openLocalFolder()} disabled={!location || loading || openingFolder} title={`${t("home.openLocalFolder")}${location ? `: ${location}` : ""}`} aria-label={t("home.openLocalFolder")} aria-busy={openingFolder}>
+              {openingFolder ? <LoaderCircle className="spinner" size={16} aria-hidden="true" /> : <ExternalLink size={16} strokeWidth={1.75} aria-hidden="true" />}
+              <span>{t("home.openFolder")}</span>
+            </button>
+          )}
+        </div>
 
         <div className="tableTools">
           <label className="searchField">

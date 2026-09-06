@@ -9,6 +9,8 @@ Storage is configured globally in Settings. WebDAV sources can save subtitles be
 
 Sidecar subtitles are preferred: in target-only mode an existing target-language `.srt`, `.ass`, `.ssa`, or `.vtt` completes the job immediately, while an existing English sidecar is synchronized and translated to a language-tagged SRT. Bilingual mode always uses English as its source so every cue contains both languages. Exact OpenSubtitles movie-hash matches skip audio synchronization, while all other matches retain the five-minute quality check.
 
+Newly generated SRT cues include a font size scaled from resolution metadata in the video filename. Common release formats such as `720p`, `1080p`, `2160p`, and `1920x1080` are recognized without probing or decoding the video; filenames without resolution metadata use a 1080p default.
+
 Synchronization runs locally. WebDAV videos are downloaded once to a temporary file, then synchronized using the same five-minute sample, 16 kHz analysis, and quality checks. The temporary video is deleted after synchronization, including on failure; no video or audio cache is retained. Local-source videos are used directly. Remote synchronization therefore requires temporary disk space for the full video and downloads the entire file, even for long movies.
 
 ## Setup

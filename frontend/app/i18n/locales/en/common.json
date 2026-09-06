@@ -66,6 +66,10 @@
     "local": "Local",
     "localLower": "local",
     "directoryPath": "Directory path",
+    "openFolder": "Open folder",
+    "openRemoteFolder": "Open WebDAV folder in a new tab",
+    "openLocalFolder": "Open folder on this computer",
+    "openFolderError": "Could not open the folder",
     "searchFolder": "Search this folder",
     "videos": "Videos",
     "sortBy": "Sort by {{field}}{{current}}",
@@ -158,6 +162,9 @@
     "saveError": "Could not save settings",
     "configuration": "Configuration",
     "credentialsNotice": "Credentials are saved locally and kept private.",
+    "openCredentials": "Open config.json",
+    "openCredentialsPath": "Open credential file at {{path}}",
+    "openCredentialsError": "Could not open the credential file",
     "optional": "Optional",
     "secretStored": "Saved securely",
     "clearField": "Clear {{field}}",
@@ -165,6 +172,10 @@
     "loading": "Loading settings…",
     "saving": "Saving…",
     "save": "Save settings",
+    "openSubtitlesLinks": {
+      "label": "OpenSubtitles help",
+      "guide": "How to get an API key"
+    },
     "sections": {
       "storage": "Storage",
       "subtitles": "Subtitles",

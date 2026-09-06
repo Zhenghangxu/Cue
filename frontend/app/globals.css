@@ -180,14 +180,31 @@ h2 { font-size: 20px; font-weight: 600; line-height: 1.3; letter-spacing: -0.015
   box-shadow: var(--shadow-sm);
 }
 
+.directoryHeader { display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-3); border-bottom: 1px solid var(--border); }
+.openFolderButton {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  flex-shrink: 0; min-height: 36px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--background); color: var(--accent-foreground);
+  font-size: 12px; font-weight: 500; text-decoration: none; cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.openFolderButton:hover:not(:disabled) { background: var(--accent); border-color: var(--accent-foreground); }
+.openFolderButton:disabled { opacity: .45; }
+@media (max-width: 600px) {
+  .openFolderButton { width: 36px; padding: 8px; }
+  .openFolderButton span { display: none; }
+}
+
 .breadcrumbs {
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-height: 56px;
   padding: 0 var(--space-4);
-  border-bottom: 1px solid var(--border);
   background: var(--surface);
   font-size: 14px;
 }
@@ -790,7 +807,12 @@ footer { font-size: 12px; line-height: 1.6; text-align: left; }
 .settingsNav a { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border-radius: 8px; text-decoration: none; color: var(--muted-foreground); font-weight: 500; }
 .settingsNav a:hover, .settingsNav a:focus-visible { color: var(--accent-foreground); background: var(--accent); }
 .settingsPrivacy { display: flex; align-items: flex-start; gap: 10px; margin: 24px 12px 0; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
-.settingsPrivacy svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-foreground); }
+.settingsPrivacy > svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-foreground); }
+.settingsPrivacy > span { min-width: 0; }
+.credentialsPathLink { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 0; border: 0; background: transparent; color: var(--accent-foreground); font: inherit; font-weight: 600; line-height: 1.4; text-align: left; cursor: pointer; }
+.credentialsPathLink svg { flex-shrink: 0; }
+.credentialsPathLink:hover { text-decoration: underline; text-underline-offset: 3px; }
+.credentialsPathLink:disabled { opacity: .5; cursor: wait; }
 .settingsContent { min-width: 0; }
 .settingsIntro { display: block; padding: 0 0 24px; border: 0; }
 .settingsIntro h2 { font-size: 26px; margin-bottom: 8px; }
@@ -801,6 +823,11 @@ footer { font-size: 12px; line-height: 1.6; text-align: left; }
 .settingsGrid legend { float: left; display: flex; align-items: center; gap: 10px; width: 100%; border: 0; padding: 0; margin: 0 0 8px; font-size: 16px; }
 .settingsGrid legend svg { color: var(--accent-foreground); }
 .sectionDescription { clear: both; margin: 0 0 24px; color: var(--muted-foreground); line-height: 1.6; font-size: 13px; }
+.sectionDescription.hasSectionLinks { margin-bottom: 10px; }
+.sectionLinks { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 24px; }
+.sectionLinks a { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-foreground); font-size: 12px; font-weight: 600; text-decoration: none; }
+.sectionLinks a:hover { text-decoration: underline; text-underline-offset: 4px; }
+.sectionLinks svg { flex-shrink: 0; }
 .sectionFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 24px; }
 .settingField { margin: 0; }
 .settingFieldSeparated { padding: 0; border: 0; }

@@ -30,6 +30,7 @@ from backend.app import (
     SubtitleCandidate,
     TARGET_LANGUAGES,
     WebDAV,
+    apply_subtitle_font_size,
     apply_unix_permissions,
     batch_cues,
     calculate_moviehash,
@@ -42,10 +43,14 @@ from backend.app import (
     create_job,
     get_settings,
     local_folders,
+    files,
+    open_credentials_file,
+    open_local_folder,
     require_services,
     rename_files,
     run_job,
     sync_subtitle,
+    subtitle_font_size,
     translate_srt,
     update_job,
     update_settings,
@@ -305,6 +310,21 @@ class CoreTests(unittest.TestCase):
             "Movie (2).zh-Hans.srt",
         )
 
+    def test_subtitle_font_size_scales_with_release_resolution(self):
+        self.assertEqual(subtitle_font_size("Movie.480p.mkv"), 22)
+        self.assertEqual(subtitle_font_size("Movie.1920x1080.mkv"), 49)
+        self.assertEqual(subtitle_font_size("Movie.2160p.mkv"), 97)
+        self.assertEqual(subtitle_font_size("Movie.mkv"), 49)
+
+    def test_resolution_aware_font_size_is_applied_to_every_cue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Movie.es.srt"
+            path.write_bytes(SRT)
+            apply_subtitle_font_size(path, "Movie.720p.mkv")
+            subtitles = list(srt.parse(path.read_text(encoding="utf-8")))
+
+        self.assertEqual(subtitles[0].content, '<font size="32">Hello there.</font>')
+
     def test_cues_are_bounded_by_count_and_characters(self):
         cues = [
             (index, srt.Subtitle(index=index + 1, start=timedelta(), end=timedelta(seconds=1), content="x" * 130))
@@ -379,6 +399,49 @@ class CoreTests(unittest.TestCase):
         authenticated = replace(config(), opensubtitles_username="member", opensubtitles_password="secret")
         with self.assertRaisesRegex(PipelineError, "login failed"):
             OpenSubtitles(authenticated, client)._login()
+        self.assertEqual(len(requests), 1)
+
+    def test_opensubtitles_search_follows_same_origin_redirects(self):
+        requests = []
+
+        def handler(request: httpx.Request):
+            requests.append(request)
+            if len(requests) == 1:
+                return httpx.Response(301, headers={"Location": "/api/v1/subtitles/?query=movie"})
+            return httpx.Response(200, json={"data": []})
+
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            headers={"Api-Key": "consumer-secret"},
+            transport=httpx.MockTransport(handler),
+        )
+        self.assertEqual(OpenSubtitles(config(), client)._search({"query": "movie"}), [])
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(str(requests[1].url), "https://api.opensubtitles.com/api/v1/subtitles/?query=movie")
+        self.assertEqual(requests[1].headers.get("api-key"), "consumer-secret")
+
+    def test_opensubtitles_search_explains_blocked_redirect(self):
+        requests = []
+
+        def handler(request: httpx.Request):
+            requests.append(request)
+            return httpx.Response(
+                301,
+                headers={"Location": "https://user:password@other.example.test/login?token=secret"},
+            )
+
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            transport=httpx.MockTransport(handler),
+        )
+        with self.assertRaisesRegex(
+            PipelineError,
+            r"OpenSubtitles search failed \(301 Moved Permanently\): redirected to "
+            r"https://other\.example\.test/login; that destination was not safe to follow",
+        ) as caught:
+            OpenSubtitles(config(), client)._search({"query": "movie"})
+        self.assertNotIn("secret", str(caught.exception))
+        self.assertNotIn("password", str(caught.exception))
         self.assertEqual(len(requests), 1)
 
     def test_opensubtitles_download_validates_links_and_redirects(self):
@@ -881,7 +944,7 @@ class PipelineTests(unittest.TestCase):
             subtitle_mode="target",
         )
         self.assertEqual(result["outputPath"], "Movie.zh-Hans.srt")
-        self.assertEqual(webdav.uploads["Movie.zh-Hans.srt"], SRT)
+        self.assertIn(b'<font size="49">Hello there.</font>', webdav.uploads["Movie.zh-Hans.srt"])
         self.assertEqual(opensubtitles.languages, ("zh-cn", "en"))
 
     def test_exact_moviehash_skips_sync_but_metadata_match_does_not(self):
@@ -1012,7 +1075,7 @@ class PipelineTests(unittest.TestCase):
                 subtitle_mode="target",
             )
             self.assertEqual(result["outputPath"], "Shows/Movie.zh-Hans.srt")
-            self.assertEqual((folder / "Movie.zh-Hans.srt").read_bytes(), SRT)
+            self.assertIn(b'<font size="49">Hello there.</font>', (folder / "Movie.zh-Hans.srt").read_bytes())
 
     def test_no_subtitle_stops_before_download_or_upload(self):
         webdav = FakeWebDAV()
@@ -1329,6 +1392,60 @@ class TranslationTests(unittest.TestCase):
                 translate_srt(source, Path(directory) / "out.srt", config(), fake)
         self.assertEqual(len(calls), 1)
         sleep.assert_not_called()
+
+
+class OpenFolderTests(unittest.TestCase):
+    def test_credential_file_is_revealed_in_file_manager(self):
+        with tempfile.TemporaryDirectory() as root:
+            credentials_file = Path(root, "config.json")
+            credentials_file.write_text("{}", encoding="utf-8")
+            with patch("backend.app.CONFIG_PATH", credentials_file), patch(
+                "backend.app.sys.platform", "darwin"
+            ), patch("backend.app.subprocess.run") as run:
+                self.assertEqual(open_credentials_file(), {"opened": True})
+                self.assertEqual(run.call_args.args[0], ["open", "-R", str(credentials_file.resolve())])
+
+    def test_missing_credential_file_cannot_be_opened(self):
+        with tempfile.TemporaryDirectory() as root, patch(
+            "backend.app.CONFIG_PATH", Path(root, "missing.json")
+        ), patch("backend.app.subprocess.run") as run:
+            with self.assertRaises(HTTPException) as caught:
+                open_credentials_file()
+            self.assertEqual(caught.exception.status_code, 404)
+            run.assert_not_called()
+
+    def test_remote_location_encodes_current_directory(self):
+        source = WebDAV(config())
+        try:
+            with patch("backend.app.require_services", return_value=(None, source, None, None)), patch.object(source, "list", return_value=[]):
+                result = files("Films & TV/电影 #1", False)
+            self.assertEqual(result["location"], "https://example.test/dav/Media%20Library/Films%20%26%20TV/%E7%94%B5%E5%BD%B1%20%231/")
+        finally:
+            source.client.close()
+            source.media_client.close()
+
+    def test_local_folder_opens_and_rejects_escape_and_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root, "Films & TV")
+            folder.mkdir()
+            Path(root, "video.mkv").touch()
+            source = LocalStorage(root)
+            with patch("backend.app.require_services", return_value=(None, source, None, None)), patch("backend.app.sys.platform", "darwin"), patch("backend.app.subprocess.run") as run:
+                self.assertEqual(open_local_folder("Films & TV"), {"opened": True})
+                self.assertEqual(run.call_args.args[0], ["open", str(folder.resolve())])
+                run.reset_mock()
+                for path in ("../outside", "video.mkv", "missing"):
+                    with self.assertRaises(HTTPException) as caught:
+                        open_local_folder(path)
+                    self.assertEqual(caught.exception.status_code, 400)
+                run.assert_not_called()
+
+    def test_opener_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch("backend.app.require_services", return_value=(None, LocalStorage(root), None, None)), patch("backend.app.sys.platform", "darwin"), patch("backend.app.subprocess.run", side_effect=OSError("Unavailable")):
+                with self.assertRaises(HTTPException) as caught:
+                    open_local_folder("")
+                self.assertEqual(caught.exception.status_code, 500)
 
 
 if __name__ == "__main__":

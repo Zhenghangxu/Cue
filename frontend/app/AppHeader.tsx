@@ -1,9 +1,24 @@
+"use client";
+
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 import { ArrowLeft, ChevronRight, Settings } from "lucide-react";
 import { useT } from "next-i18next/client";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
+import { directoryPathname, readLastMediaDirectory } from "./directoryRouting";
+
+function subscribeToLastMediaDirectory() {
+  return () => {};
+}
+
+function getLastMediaDirectorySnapshot() {
+  return readLastMediaDirectory(sessionStorage);
+}
+
+function getServerLastMediaDirectorySnapshot() {
+  return "";
+}
 
 export function AppHeader({
   page = "home",
@@ -19,6 +34,12 @@ export function AppHeader({
   const { t, i18n } = useT("common");
   const settingsPage = page === "settings";
   const localePrefix = i18n.language === "en" ? "" : `/${i18n.language}`;
+  const lastMediaDirectory = useSyncExternalStore(
+    subscribeToLastMediaDirectory,
+    getLastMediaDirectorySnapshot,
+    getServerLastMediaDirectorySnapshot,
+  );
+  const mediaHref = directoryPathname(lastMediaDirectory, i18n.language);
 
   return (
     <header className={`hero ${settingsPage ? "settingsHeader" : "homeHeader"}`}>
@@ -36,7 +57,7 @@ export function AppHeader({
         {jobsControl}
         {settingsPage && mediaDisabled ? <button className="settingsLink" type="button" disabled title={t("setup.finishFirst")}>
           <ArrowLeft size={16} strokeWidth={1.75} /><span>{t("header.media")}</span>
-        </button> : <Link className="settingsLink" href={settingsPage ? `${localePrefix}/` : `${localePrefix}/settings/`}>
+        </button> : <Link className="settingsLink" href={settingsPage ? mediaHref : `${localePrefix}/settings/`}>
           {settingsPage
             ? <ArrowLeft size={16} strokeWidth={1.75} />
             : <Settings size={16} strokeWidth={1.75} />}

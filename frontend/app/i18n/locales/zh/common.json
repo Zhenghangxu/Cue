@@ -65,6 +65,10 @@
     "local": "本地",
     "localLower": "本地",
     "directoryPath": "目录路径",
+    "openFolder": "打开文件夹",
+    "openRemoteFolder": "在新标签页中打开 WebDAV 文件夹",
+    "openLocalFolder": "在此电脑上打开文件夹",
+    "openFolderError": "无法打开文件夹",
     "searchFolder": "搜索此文件夹",
     "videos": "视频",
     "sortBy": "按{{field}}排序{{current}}",
@@ -154,6 +158,9 @@
     "saveError": "无法保存设置",
     "configuration": "配置",
     "credentialsNotice": "凭据保存在本地，并受到隐私保护。",
+    "openCredentials": "打开 config.json",
+    "openCredentialsPath": "打开位于 {{path}} 的凭据文件",
+    "openCredentialsError": "无法打开凭据文件",
     "optional": "可选",
     "secretStored": "已安全保存",
     "clearField": "清除{{field}}",
@@ -161,6 +168,10 @@
     "loading": "正在加载设置…",
     "saving": "正在保存…",
     "save": "保存设置",
+    "openSubtitlesLinks": {
+      "label": "OpenSubtitles 帮助",
+      "guide": "如何获取 API 密钥"
+    },
     "sections": {
       "storage": "存储",
       "subtitles": "字幕",

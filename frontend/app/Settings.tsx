@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { ArrowRight, Check, HardDrive, Captions, Cloud, Search, Sparkles, ShieldCheck } from "lucide-react";
+import { ArrowRight, BookOpen, Check, ExternalLink, FileJson, HardDrive, Captions, Cloud, Search, Sparkles, ShieldCheck } from "lucide-react";
 import { useT } from "next-i18next/client";
 import { useRouter } from "next/navigation";
 import { AppHeader } from "./AppHeader";
@@ -10,6 +10,7 @@ import { LocalFolderPicker } from "./LocalFolderPicker";
 import { formatSubtitleModeLabel } from "./subtitleOptions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+const OPENSUBTITLES_GUIDE_URL = "https://opensubtitles.tawk.help/article/getting-started";
 type Option = { value: string; label: string };
 type SettingsOptions = {
   target_languages: Option[];
@@ -95,6 +96,8 @@ function fieldIsVisible(field: SettingField, values: Record<string, string>) {
 
 type SettingsResponse = {
   setup_required: boolean;
+  credentials_path: string;
+  credentials_file_exists: boolean;
   values: Record<string, string>;
   secrets: Record<string, boolean>;
   options: SettingsOptions;
@@ -121,6 +124,9 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [credentialsPath, setCredentialsPath] = useState("");
+  const [credentialsFileExists, setCredentialsFileExists] = useState(false);
+  const [openingCredentials, setOpeningCredentials] = useState(false);
   const [savedValues, setSavedValues] = useState("{}");
   const dirty = JSON.stringify(values) !== savedValues || Object.values(secretValues).some(Boolean) || clearSecrets.length > 0;
   const targetLanguageName = options.target_languages
@@ -137,6 +143,8 @@ export function Settings() {
         setStoredSecrets(settings.secrets);
         setOptions(settings.options);
         setSetup(settings.setup_required);
+        setCredentialsPath(settings.credentials_path);
+        setCredentialsFileExists(settings.credentials_file_exists);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : t("settings.loadError")))
       .finally(() => setLoading(false));
@@ -149,6 +157,21 @@ export function Settings() {
       stepHeading.current?.focus();
       stepHeading.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
+  }
+
+  async function openCredentialsFile() {
+    if (openingCredentials) return;
+    setOpeningCredentials(true);
+    setError("");
+    try {
+      const response = await fetch(`${API}/api/settings/credentials/open`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || t("settings.openCredentialsError"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("settings.openCredentialsError"));
+    } finally {
+      setOpeningCredentials(false);
+    }
   }
 
   async function save(event: FormEvent) {
@@ -205,7 +228,23 @@ export function Settings() {
             const Icon = SECTION_ICONS[section.titleKey as keyof typeof SECTION_ICONS];
             return <a href={`#settings-${section.titleKey}`} key={section.titleKey}><Icon size={17} aria-hidden="true" />{t(`settings.sections.${section.titleKey}`)}</a>;
           })}
-          <p className="settingsPrivacy"><ShieldCheck size={19} aria-hidden="true" />{t("settings.credentialsNotice")}</p>
+          <div className="settingsPrivacy">
+            <ShieldCheck size={19} aria-hidden="true" />
+            <span>
+              {t("settings.credentialsNotice")}
+              {!setup && credentialsFileExists && <button
+                type="button"
+                className="credentialsPathLink"
+                title={t("settings.openCredentialsPath", { path: credentialsPath })}
+                aria-label={t("settings.openCredentialsPath", { path: credentialsPath })}
+                disabled={openingCredentials}
+                onClick={() => void openCredentialsFile()}
+              >
+                <FileJson size={14} aria-hidden="true" />
+                {t("settings.openCredentials")}
+              </button>}
+            </span>
+          </div>
         </nav>
         <div className="settingsContent">
         <div className="settingsIntro">
@@ -221,7 +260,16 @@ export function Settings() {
             const Icon = SECTION_ICONS[section.titleKey as keyof typeof SECTION_ICONS];
             return <fieldset key={section.titleKey} id={`settings-${section.titleKey}`} tabIndex={-1}>
               <legend><Icon size={18} aria-hidden="true" />{t(`settings.sections.${section.titleKey}`)}</legend>
-              <p className="sectionDescription">{t(`settings.descriptions.${section.titleKey}`)}</p>
+              <p className={`sectionDescription${section.titleKey === "openSubtitles" ? " hasSectionLinks" : ""}`}>
+                {t(`settings.descriptions.${section.titleKey}`)}
+              </p>
+              {section.titleKey === "openSubtitles" && <div className="sectionLinks" aria-label={t("settings.openSubtitlesLinks.label")}>
+                <a href={OPENSUBTITLES_GUIDE_URL} target="_blank" rel="noopener noreferrer">
+                  <BookOpen size={15} aria-hidden="true" />
+                  {t("settings.openSubtitlesLinks.guide")}
+                  <ExternalLink size={13} aria-hidden="true" />
+                </a>
+              </div>}
               <div className="sectionFields">
               {fields.map((field) => (
                 <div className={`settingField${field.separatorBefore ? " settingFieldSeparated" : ""}`} key={field.name}>

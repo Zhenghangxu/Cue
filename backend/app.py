@@ -8,6 +8,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -96,6 +97,10 @@ DIRECTORY_CACHE_MAX_ENTRIES = 128
 TRANSLATION_BATCH_CUES = 32
 TRANSLATION_BATCH_CHARS = 6_000
 TRANSLATION_WORKERS = 4
+DEFAULT_VIDEO_HEIGHT = 1080
+MIN_SUBTITLE_FONT_SIZE = 20
+MAX_SUBTITLE_FONT_SIZE = 144
+SUBTITLE_HEIGHT_RATIO = 0.045
 DAV = "{DAV:}"
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -416,6 +421,29 @@ def normalized_title(value: str) -> str:
 def normalize_release_filename(filename: str) -> str:
     match = re.fullmatch(r"\[[^]]+\]\[([^]]+)\]\[(\d+)\](?:\[[^]]+\])*(\.[^.]+)", filename)
     return f"{match.group(1)} {match.group(2)}{match.group(3)}" if match else filename
+
+
+def subtitle_font_size(video_path: str) -> int:
+    """Return a readable subtitle size from release-name resolution metadata."""
+    screen_size = str(guessit(PurePosixPath(video_path).name).get("screen_size", ""))
+    match = re.search(r"(\d{3,4})p", screen_size, flags=re.IGNORECASE)
+    height = int(match.group(1)) if match else DEFAULT_VIDEO_HEIGHT
+    return max(
+        MIN_SUBTITLE_FONT_SIZE,
+        min(MAX_SUBTITLE_FONT_SIZE, round(height * SUBTITLE_HEIGHT_RATIO)),
+    )
+
+
+def apply_subtitle_font_size(path: Path, video_path: str) -> None:
+    try:
+        subtitles = list(srt.parse(path.read_text(encoding="utf-8-sig")))
+    except (UnicodeDecodeError, srt.SRTParseError):
+        return
+    size = subtitle_font_size(video_path)
+    for subtitle in subtitles:
+        if subtitle.content:
+            subtitle.content = f'<font size="{size}">{subtitle.content}</font>'
+    path.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8", newline="\n")
 
 
 def subtitle_output_filename(video_path: str, target_language: str, subtitle_mode: str = "target") -> str:
@@ -1034,6 +1062,9 @@ class LocalStorage:
 
 
 class OpenSubtitles:
+    API_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+    MAX_API_REDIRECTS = 5
+
     def __init__(
         self,
         config: Config,
@@ -1090,7 +1121,34 @@ class OpenSubtitles:
             response: httpx.Response | None = None
             try:
                 request = client.build_request(method, url, **kwargs)
-                response = client.send(request, stream=stream, follow_redirects=False)
+                redirect_count = 0
+                while True:
+                    response = client.send(request, stream=stream, follow_redirects=False)
+                    if (
+                        method.upper() not in {"GET", "HEAD"}
+                        or response.status_code not in self.API_REDIRECT_STATUSES
+                    ):
+                        break
+                    location = response.headers.get("location")
+                    if not location:
+                        break
+                    try:
+                        target = httpx.URL(urljoin(str(request.url), location))
+                    except httpx.InvalidURL:
+                        break
+                    if (
+                        target.scheme != "https"
+                        or target.host != request.url.host
+                        or target.port != request.url.port
+                        or target.userinfo
+                    ):
+                        break
+                    if redirect_count >= self.MAX_API_REDIRECTS:
+                        response.close()
+                        raise PipelineError(f"{operation} redirected too many times")
+                    response.close()
+                    redirect_count += 1
+                    request = client.build_request(method, target)
             except httpx.HTTPError as exc:
                 if attempt == 2:
                     raise PipelineError(f"{operation} could not connect") from exc
@@ -1106,6 +1164,34 @@ class OpenSubtitles:
                     response.close()
             time.sleep(delay)
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _api_failure(operation: str, response: httpx.Response) -> PipelineError:
+        status = response.status_code
+        if status in OpenSubtitles.API_REDIRECT_STATUSES:
+            reason = response.reason_phrase or "redirect"
+            location = response.headers.get("location")
+            if not location:
+                detail = "the response did not include a redirect destination"
+            else:
+                resolved = urlsplit(urljoin(str(response.url), location))
+                try:
+                    port = f":{resolved.port}" if resolved.port else ""
+                except ValueError:
+                    port = ":invalid-port"
+                host = resolved.hostname or "invalid-host"
+                destination = f"{resolved.scheme or 'invalid-scheme'}://{host}{port}{resolved.path}"
+                detail = f"redirected to {destination}; that destination was not safe to follow"
+            return PipelineError(f"{operation} failed ({status} {reason}): {detail}")
+
+        try:
+            payload = response.json()
+            detail = payload.get("errors") or payload.get("message") if isinstance(payload, dict) else None
+        except ValueError:
+            detail = None
+        if isinstance(detail, list):
+            detail = ", ".join(map(str, detail))
+        return PipelineError(f"{operation} failed ({status}){f': {detail}' if detail else ''}")
 
     def _login(self) -> None:
         if not self.username or not self.password:
@@ -1125,16 +1211,7 @@ class OpenSubtitles:
     def _search(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         response = self._request("GET", "subtitles", "OpenSubtitles search", params=params)
         if response.status_code != 200:
-            try:
-                payload = response.json()
-                detail = payload.get("errors") or payload.get("message") if isinstance(payload, dict) else None
-            except ValueError:
-                detail = None
-            if isinstance(detail, list):
-                detail = ", ".join(map(str, detail))
-            raise PipelineError(
-                f"OpenSubtitles search failed ({response.status_code}){f': {detail}' if detail else ''}"
-            )
+            raise self._api_failure("OpenSubtitles search", response)
         return response.json().get("data", [])
 
     @staticmethod
@@ -1698,6 +1775,7 @@ def process_video(
         else:
             shutil.copyfile(synced, final)
 
+        apply_subtitle_font_size(final, relative)
         progress("saving", f"Saving {PurePosixPath(output_path).name}")
         destination.put(output_path, final.read_bytes())
 
@@ -1817,10 +1895,18 @@ def run_job(job_id: str) -> None:
             except PipelineError as exc:
                 with JOBS_LOCK:
                     item = JOBS[job_id].items[index]
+                    failed_stage = item.status
                     item.status = "failed"
                     item.message = "Could not rename" if kind == "rename" else "Could not finish"
                     item.error = str(exc)
                     item.finished_at = time.time()
+                LOGGER.warning(
+                    "job_item_failed job_id=%s path=%r stage=%s error=%s",
+                    job_id,
+                    path,
+                    failed_stage,
+                    exc,
+                )
             except Exception:
                 LOGGER.exception("job_item_crashed job_id=%s path=%r", job_id, path)
                 with JOBS_LOCK:
@@ -2000,6 +2086,8 @@ def get_settings() -> dict[str, Any]:
         secrets = load_saved_secrets()
         return {
             "setup_required": not (values["local_scan_path"] or values["webdav_endpoint"] or any(secrets.values())),
+            "credentials_path": str(CONFIG_PATH),
+            "credentials_file_exists": CONFIG_PATH.is_file(),
             "values": values,
             "secrets": {key: key in secrets for key in SECRET_SETTINGS},
             "options": {
@@ -2017,6 +2105,32 @@ def get_settings() -> dict[str, Any]:
         }
     except PipelineError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/settings/credentials/open")
+def open_credentials_file() -> dict[str, bool]:
+    try:
+        credentials_file = CONFIG_PATH.resolve(strict=True)
+        if not credentials_file.is_file():
+            raise FileNotFoundError
+        if sys.platform == "darwin":
+            command = ["open", "-R", str(credentials_file)]
+        elif sys.platform == "win32":
+            command = ["explorer", "/select,", str(credentials_file)]
+        else:
+            command = ["xdg-open", str(credentials_file.parent)]
+        subprocess.run(
+            command,
+            check=True,
+            timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, NotADirectoryError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="The credential file does not exist yet") from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=500, detail="Could not open the credential file") from exc
+    return {"opened": True}
 
 
 @app.put("/api/settings")
@@ -2096,9 +2210,34 @@ def files(path: str = Query(default=""), refresh: bool = Query(default=False)) -
     _, source, _, _ = require_services()
     try:
         relative = normalize_relative(path)
-        return {"path": relative, "entries": [asdict(entry) for entry in source.list(relative, refresh=refresh)]}
+        entries = [asdict(entry) for entry in source.list(relative, refresh=refresh)]
+        location = str(source._path(relative)) if isinstance(source, LocalStorage) else source.url_for(relative, directory=True)
+        return {"path": relative, "entries": entries, "location": location}
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/folders/open")
+def open_local_folder(path: str = Query(default="")) -> dict[str, bool]:
+    _, source, _, _ = require_services()
+    if not isinstance(source, LocalStorage):
+        raise HTTPException(status_code=400, detail="The current source is not local storage")
+    try:
+        directory = source._path(path, must_exist=True)
+        if not directory.is_dir():
+            raise PipelineError("Local path is not a directory")
+        if sys.platform == "win32":
+            os.startfile(str(directory))
+        else:
+            subprocess.run(
+                ["open" if sys.platform == "darwin" else "xdg-open", str(directory)],
+                check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except PipelineError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=500, detail="Could not open the folder in the system file manager") from exc
+    return {"opened": True}
 
 
 @app.get("/api/quota")
