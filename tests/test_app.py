@@ -83,12 +83,13 @@ SRT = b"1\n00:00:01,000 --> 00:00:03,000\nHello there.\n\n"
 
 class CoreTests(unittest.TestCase):
     def test_unix_permissions_warn_and_skip_on_windows(self):
+        path = Path("config.json")
         with (
             patch("backend.app.os.name", "nt"),
             patch("backend.app.os.chmod") as chmod,
             self.assertLogs("uvicorn.error", level="WARNING") as logs,
         ):
-            apply_unix_permissions(Path("config.json"), 0o600)
+            apply_unix_permissions(path, 0o600)
 
         chmod.assert_not_called()
         self.assertIn("Skipping Unix permissions 600", logs.output[0])

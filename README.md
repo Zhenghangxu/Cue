@@ -14,13 +14,15 @@ Cue is a local web app for videos on WebDAV or your own filesystem. Choose a lan
 
 ## Quick start
 
-Install **Python 3.13**, **uv**, **Node.js 20+**, and **FFmpeg**, then run from the repository root:
+Install **Python 3.10–3.14**, **uv**, **Node.js 20+**, and **FFmpeg**, then run from the repository root:
 
 ```sh
 uv sync
 npm --prefix frontend install
 npm run prod
 ```
+
+Any Python version in this range works; you do not need Python 3.13 specifically. To choose an installed version explicitly, use `uv sync --python 3.12` (replace `3.12` with your version) in place of `uv sync`.
 
 Open **<http://127.0.0.1:3666/>** and follow the setup wizard. Have these ready:
 
