@@ -334,7 +334,7 @@ export function Home() {
       Promise.all(active.map((job) => api<Job>(`/api/jobs/${job.id}`)))
         .then((updated) => {
           setJobs((current) => current.map((job) => updated.find(({ id }) => id === job.id) ?? job));
-          if (updated.some((job) => job.kind === "rename" && TERMINAL.has(job.status))) {
+          if (updated.some((job) => TERMINAL.has(job.status))) {
             void loadDirectory(path, { refresh: true, resetView: false });
           }
         })
