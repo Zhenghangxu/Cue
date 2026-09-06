@@ -22,8 +22,10 @@ const homeSource = ts.transpileModule(
 ).outputText;
 
 // Mount the real Home component, replacing only its Next shell and HTTP boundary.
-async function mountHome(t, kind, terminalStatus) {
+async function mountHome(t, kind, terminalStatus, error) {
   const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost/Series/" });
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   const restoreGlobals = [];
   for (const [key, value] of Object.entries({
     window: dom.window,
@@ -74,7 +76,7 @@ async function mountHome(t, kind, terminalStatus) {
       };
       else if (url === "/api/jobs/job-1") body = {
         id: "job-1", kind, status, message: "", created_at: 1,
-        items: [{ path: video.path, status, message: "" }],
+        items: [{ path: video.path, status, message: "", error: status === "failed" ? error : undefined }],
       };
       else if (url.startsWith("/api/files?")) {
         fileRequests.push(url);
@@ -132,4 +134,39 @@ for (const kind of ["subtitles", undefined, "rename"]) {
       assert.equal(home.fileRequests.length, 2, "terminal jobs are not polled or refreshed again");
     });
   }
+}
+
+for (const [error, showHelp] of [
+  ["No reliable requested subtitle was found", true],
+  ["OpenSubtitles search failed (400): The query is rejected", true],
+  ["OpenSubtitles search failed (422): query is invalid", true],
+  ["OpenSubtitles search failed (401): Unauthorized", false],
+  ["OpenSubtitles search failed (429): Too many requests", false],
+  ["OpenSubtitles search could not connect", false],
+  ["OpenSubtitles download request failed (400): The query is rejected", false],
+]) {
+  test(`rename help for ${error}`, async (t) => {
+    const home = await mountHome(t, "subtitles", "failed", error);
+    await home.poll("failed");
+    const jobs = home.document.querySelector('[aria-controls="job-queue"]');
+    if (jobs.getAttribute("aria-expanded") !== "true") await act(async () => jobs.click());
+    assert.equal(home.document.querySelector(".queueError").textContent, error);
+    const help = home.document.querySelector(".renameHelpLink");
+    assert.equal(Boolean(help), showHelp);
+    if (!showHelp) return;
+    await act(async () => help.click());
+    const dialog = home.document.getElementById("rename-help");
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.querySelectorAll("li").length, 4);
+    assert.match(dialog.textContent, /English movie or series title/);
+    assert.match(dialog.textContent, /Create subtitles/);
+    await act(async () => dialog.querySelector(".dialogActions button").click());
+    assert.equal(dialog.open, false);
+    await act(async () => help.click());
+    await act(async () => dialog.querySelector('[aria-label="Close rename help"]').click());
+    assert.equal(dialog.open, false);
+    await act(async () => help.click());
+    await act(async () => dialog.click());
+    assert.equal(dialog.open, false);
+  });
 }

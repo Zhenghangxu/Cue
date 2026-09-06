@@ -179,6 +179,7 @@ export function Home() {
   const pathname = usePathname();
   const directoryRequest = useRef(0);
   const renameDialog = useRef<HTMLDialogElement>(null);
+  const renameHelpDialog = useRef<HTMLDialogElement>(null);
   const jobsDock = useRef<HTMLDivElement>(null);
   const modeMenu = useRef<HTMLDetailsElement>(null);
   const submittingJob = useRef(false);
@@ -359,11 +360,12 @@ export function Home() {
     if (queueMinimized) return;
 
     function dismissQueue(event: PointerEvent) {
+      if (renameHelpDialog.current?.open) return;
       if (!jobsDock.current?.contains(event.target as Node)) setQueueMinimized(true);
     }
 
     function dismissOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !renameHelpDialog.current?.open) {
         setQueueMinimized(true);
         jobsDock.current?.querySelector("button")?.focus();
       }
@@ -573,7 +575,18 @@ export function Home() {
                     <div className="queueItem" key={`${job.id}-${item.path}-${index}`}>
                       <div>
                         <strong title={item.path}>{item.path.split("/").at(-1)}</strong>
-                        <small className={item.error ? "queueError" : ""}>{item.error ?? item.message}</small>
+                        <small className={item.error ? "queueError" : ""} title={item.error ?? item.message}>{item.error ?? item.message}</small>
+                        {item.error && (item.error === "No reliable requested subtitle was found" || /^OpenSubtitles search failed \(4\d\d\):.*\bquery\b.*\b(reject(?:ed)?|invalid)\b/i.test(item.error)) && (
+                          <button
+                            type="button"
+                            className="renameHelpLink"
+                            aria-haspopup="dialog"
+                            aria-controls="rename-help"
+                            onClick={() => renameHelpDialog.current?.showModal()}
+                          >
+                            {t("home.renameHelp.link")}
+                          </button>
+                        )}
                       </div>
                       <span className="queueTimer" role="timer" aria-label={t("home.jobs.elapsed", { time: elapsedTime })}>
                         {elapsedTime}
@@ -831,6 +844,37 @@ export function Home() {
           </div>
         </div>
       </section>
+
+      <dialog
+        id="rename-help"
+        className="renameDialog"
+        ref={renameHelpDialog}
+        aria-labelledby="rename-help-title"
+        aria-describedby="rename-help-reason"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) event.currentTarget.close();
+        }}
+      >
+        <div className="renameHelpContent">
+          <div className="dialogHeader">
+            <h2 id="rename-help-title">{t("home.renameHelp.title")}</h2>
+            <button type="button" aria-label={t("home.renameHelp.close")} onClick={() => renameHelpDialog.current?.close()}>
+              <X size={18} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          </div>
+          <p id="rename-help-reason">{t("home.renameHelp.reason")}</p>
+          <ol>
+            <li>{t("home.renameHelp.select")}</li>
+            <li>{t("home.renameHelp.choose")}</li>
+            <li>{t("home.renameHelp.titleStep")}</li>
+            <li>{t("home.renameHelp.retry")}</li>
+          </ol>
+          <p>{t("home.renameHelp.note")}</p>
+          <div className="dialogActions">
+            <button type="button" onClick={() => renameHelpDialog.current?.close()}>{t("home.renameHelp.done")}</button>
+          </div>
+        </div>
+      </dialog>
 
       <dialog
         className="renameDialog"

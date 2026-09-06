@@ -96,6 +96,18 @@
       "aiTokens": "AI tokens",
       "subtitlesRemaining": "subtitles remaining"
     },
+    "renameHelp": {
+      "link": "How do I use Smart rename?",
+      "title": "Help OpenSubtitles recognize your video",
+      "close": "Close rename help",
+      "reason": "Cue builds subtitle searches from video filenames. If a query is rejected or no reliable subtitle is found, a clearer filename with the English movie or series title may help.",
+      "select": "Close this guide, open the folder containing the failed video, and select it. For a batch, select only videos from the same movie or series.",
+      "choose": "Open the arrow menu beside the subtitle action button and choose “Smart rename”. Then click “Rename files”.",
+      "titleStep": "Enter the English movie or series title, for example “Game of Thrones”, and confirm. The AI uses this title while keeping episode, year, quality, and extension details when present.",
+      "retry": "Wait for renaming to finish, select the renamed videos, and use the arrow menu to choose a subtitle format again. Click “Create subtitles” (or “Add to queue”) to retry.",
+      "note": "Smart rename changes the video filenames and matching subtitle filenames. It may improve the query, but does not guarantee that OpenSubtitles will accept it or find subtitles.",
+      "done": "Got it"
+    },
     "rename": {
       "eyebrow": "SMART RENAME",
       "title_one": "Name {{count}} selected video",
