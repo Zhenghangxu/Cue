@@ -6,6 +6,8 @@ from starlette.staticfiles import StaticFiles
 
 class FrontendFiles(StaticFiles):
     async def get_response(self, path, scope):
+        # StaticFiles.get_path uses native separators; route matching uses '/'.
+        path = path.replace("\\", "/")
         try:
             response = await super().get_response(path, scope)
             if response.status_code != 404:

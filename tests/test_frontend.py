@@ -1,3 +1,4 @@
+import ntpath
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.frontend import FrontendFiles
+
+
+class WindowsFrontendFiles(FrontendFiles):
+    def get_path(self, scope):
+        return ntpath.normpath(super().get_path(scope))
 
 
 class FrontendRoutingTests(unittest.TestCase):
@@ -34,6 +40,12 @@ class FrontendRoutingTests(unittest.TestCase):
                         self.assertEqual(response.headers["service-worker-allowed"], "/")
 
     def test_deep_links_and_static_routes(self):
+        self.check_deep_links_and_static_routes(FrontendFiles)
+
+    def test_deep_links_and_static_routes_with_windows_separators(self):
+        self.check_deep_links_and_static_routes(WindowsFrontendFiles)
+
+    def check_deep_links_and_static_routes(self, files_class):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for path, content in {
@@ -47,7 +59,7 @@ class FrontendRoutingTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content)
             app = FastAPI()
-            app.mount("/", FrontendFiles(directory=root, html=True))
+            app.mount("/", files_class(directory=root, html=True))
             client = TestClient(app)
             for path, content in {
                 "/Movies/Season%201/": "English library",
