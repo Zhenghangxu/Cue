@@ -10,6 +10,8 @@ Cue is a local web app for videos on WebDAV or your own filesystem. Choose a lan
 - **Process multiple videos** in sequence; one failed video won't stop the rest.
 - **Keep your library organized** with language-tagged filenames and Smart Rename. Existing subtitle files are never overwritten.
 
+![Cue media library with WebDAV browsing and the jobs panel](assets/cue-app-preview.png)
+
 ## Quick start
 
 Install **Python 3.13**, **uv**, **Node.js 20+**, and **FFmpeg**, then run from the repository root:
