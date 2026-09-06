@@ -182,6 +182,30 @@ class CoreTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(PipelineError):
                 normalize_relative(value)
 
+    def test_service_urls_reject_embedded_credentials_and_malformed_authorities(self):
+        values = config().__dict__
+        for setting in ("webdav_endpoint", "openai_base_url"):
+            for value in (
+                "https://user:password@example.test/",
+                "https://example.test:invalid/",
+                "https://example.test:99999/",
+                "https://[invalid/",
+                "https://example.test/?api_key=secret",
+                "https://example.test/#secret",
+                "https://example.test/\npath",
+                "file:///etc/passwd",
+            ):
+                with self.subTest(setting=setting, value=value), self.assertRaises(PipelineError):
+                    Config.from_settings(values | {setting: value}, values)
+        saved = Config.from_settings(values | {"openai_base_url": "http://127.0.0.1:8000/v1"}, values)
+        self.assertEqual(saved.openai_base_url, "http://127.0.0.1:8000/v1/")
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(PipelineError):
+            Config.from_settings(values | {
+                "source_type": "local",
+                "local_scan_path": directory,
+                "webdav_endpoint": "https://user:password@example.test/",
+            }, values)
+
     def test_local_configuration_does_not_require_webdav(self):
         with tempfile.TemporaryDirectory() as directory:
             values = {
@@ -280,6 +304,9 @@ class CoreTests(unittest.TestCase):
             if request.url.path.endswith("/download"):
                 self.assertEqual(request.headers.get("authorization"), "Bearer jwt")
                 return httpx.Response(200, json={"link": "https://files.example.test/sub.srt", "remaining": 4})
+            self.assertNotIn("authorization", request.headers)
+            self.assertNotIn("api-key", request.headers)
+            self.assertNotIn("cookie", request.headers)
             return httpx.Response(200, content=SRT)
 
         authenticated = Config(**{
@@ -289,14 +316,57 @@ class CoreTests(unittest.TestCase):
         })
         client = httpx.Client(
             base_url="https://api.opensubtitles.com/api/v1/",
+            headers={"Api-Key": "consumer-secret"},
+            cookies={"session": "api-cookie"},
             transport=httpx.MockTransport(handler),
         )
-        data, quota = OpenSubtitles(authenticated, client).download(
+        download_client = httpx.Client(transport=httpx.MockTransport(handler))
+        data, quota = OpenSubtitles(authenticated, client, download_client).download(
             SubtitleCandidate(1, "en", "release", True)
         )
         self.assertEqual(data, SRT)
         self.assertEqual(quota["remaining"], 4)
         self.assertTrue(requests[0].url.path.endswith("/login"))
+
+    def test_opensubtitles_does_not_follow_authenticated_api_redirects(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(307, headers={"Location": "https://other.example.test/login"})
+
+        client = httpx.Client(
+            base_url="https://api.opensubtitles.com/api/v1/",
+            follow_redirects=True,
+            transport=httpx.MockTransport(handler),
+        )
+        authenticated = replace(config(), opensubtitles_username="member", opensubtitles_password="secret")
+        with self.assertRaisesRegex(PipelineError, "login failed"):
+            OpenSubtitles(authenticated, client)._login()
+        self.assertEqual(len(requests), 1)
+
+    def test_opensubtitles_download_validates_links_and_redirects(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            if request.url.path == "/start":
+                return httpx.Response(302, headers={"Location": "/final"})
+            if request.url.path == "/unsafe":
+                return httpx.Response(302, headers={"Location": "http://files.example.test/final"})
+            return httpx.Response(200, content=SRT)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+        service = OpenSubtitles(config(), client, client)
+        self.assertEqual(service._download_file("https://files.example.test/start"), SRT)
+        self.assertEqual(len(requests), 2)
+        for link in ("http://files.example.test/file", "file:///etc/passwd", "https://user:pass@files.example.test/file", "https://files.example.test:bad/file"):
+            with self.subTest(link=link), self.assertRaisesRegex(PipelineError, "unsafe download link"):
+                service._download_file(link)
+        self.assertEqual(len(requests), 2)
+        with self.assertRaisesRegex(PipelineError, "unsafe download link"):
+            service._download_file("https://files.example.test/unsafe")
+        self.assertEqual(len(requests), 3)
 
     def test_opensubtitles_loads_remaining_quota(self):
         def handler(request: httpx.Request):
@@ -426,6 +496,24 @@ class CoreTests(unittest.TestCase):
 
 
 class WebDAVTests(unittest.TestCase):
+    def test_redirects_reject_encoded_traversal_before_sending_credentials(self):
+        for target in (
+            "/dav/Media%20Library/%2e%2e/private",
+            "/dav/Media%20Library/%252e%252e/private",
+            "/dav/Media%20Library/folder%5c..%5c..%5cprivate",
+            "https://other.example.test/dav/Media%20Library/",
+        ):
+            requests = []
+
+            def handler(request):
+                requests.append(request)
+                return httpx.Response(307, headers={"Location": target})
+
+            client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+            with self.subTest(target=target), self.assertRaises(PipelineError):
+                WebDAV(config(), client).list("")
+            self.assertEqual(len(requests), 1)
+
     def test_listing_ignores_entries_outside_scan_root(self):
         xml = b"""<?xml version="1.0"?>
         <d:multistatus xmlns:d="DAV:">
@@ -509,7 +597,72 @@ class WebDAVTests(unittest.TestCase):
         )
 
 
+class ResponseLimitTests(unittest.TestCase):
+    def test_oversized_streams_are_stopped_and_closed(self):
+        class OversizedStream(httpx.SyncByteStream):
+            closed = False
+
+            def __iter__(self):
+                yield b"1234"
+                yield b"56789"
+                raise AssertionError("The oversized response must not be drained")
+
+            def close(self):
+                self.closed = True
+
+        for operation in ("range", "directory", "sidecar", "download"):
+            for headers in ({}, {"Content-Length": "1"}):
+                with self.subTest(operation=operation, headers=headers):
+                    stream = OversizedStream()
+                    status = {"range": 206, "directory": 207}.get(operation, 200)
+                    client = httpx.Client(transport=httpx.MockTransport(
+                        lambda _: httpx.Response(status, headers=headers, stream=stream)
+                    ))
+                    with (
+                        patch("backend.app.MAX_DIRECTORY_BYTES", 8),
+                        patch("backend.app.MAX_SUBTITLE_BYTES", 8),
+                        self.assertRaisesRegex(PipelineError, "oversized|too large|unexpectedly large"),
+                    ):
+                        if operation == "range":
+                            WebDAV(config(), client).read_range("Movie.mkv", 0, 7)
+                        elif operation == "directory":
+                            WebDAV(config(), client).list("")
+                        elif operation == "sidecar":
+                            WebDAV(config(), client).read_small("Movie.srt", limit=8)
+                        else:
+                            OpenSubtitles(config(), client, client)._download_file("https://files.example.test/sub.srt")
+                    self.assertTrue(stream.closed)
+                    client.close()
+
+
 class LocalStorageTests(unittest.TestCase):
+    def test_rename_preserves_existing_destination_and_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Movie.mkv").write_bytes(b"video")
+            (root / "Renamed.mkv").write_bytes(b"existing")
+            with self.assertRaisesRegex(PipelineError, "already exists"):
+                LocalStorage(directory).move("Movie.mkv", "Renamed.mkv")
+            self.assertEqual((root / "Movie.mkv").read_bytes(), b"video")
+            self.assertEqual((root / "Renamed.mkv").read_bytes(), b"existing")
+
+    def test_rename_reports_unlink_failure_without_deleting_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Movie.mkv").write_bytes(b"video")
+            with patch.object(Path, "unlink", side_effect=PermissionError), self.assertRaisesRegex(PipelineError, "could not remove the original"):
+                LocalStorage(directory).move("Movie.mkv", "Renamed.mkv")
+            self.assertEqual((root / "Movie.mkv").read_bytes(), b"video")
+            self.assertEqual((root / "Renamed.mkv").read_bytes(), b"video")
+
+    def test_local_subtitle_reads_enforce_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "Movie.srt").write_bytes(b"123456789")
+            storage = LocalStorage(directory)
+            with self.assertRaisesRegex(PipelineError, "unexpectedly large"):
+                storage.read_small("Movie.srt", limit=8)
+            self.assertEqual(storage.read_small("Movie.srt", limit=9), b"123456789")
+
     def test_browses_hashes_writes_and_renames_inside_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -859,7 +1012,7 @@ class BatchJobTests(unittest.TestCase):
     def test_backend_logs_rejected_requests_with_correlation_id(self):
         with (
             patch("backend.app.require_services", return_value=(config(), object(), object(), object())),
-            TestClient(app) as client,
+            TestClient(app, base_url="http://127.0.0.1:3666") as client,
             self.assertLogs("uvicorn.error", level="INFO") as captured,
         ):
             rejected = client.post("/api/jobs", json={"paths": []})
@@ -878,6 +1031,38 @@ class BatchJobTests(unittest.TestCase):
         self.assertIn("request_validation_failed", logs)
         self.assertIn('"field": "body.values"', logs)
         self.assertNotIn("must-not-be-logged", logs)
+
+    def test_validation_errors_do_not_echo_submitted_credentials(self):
+        with TestClient(app, base_url="http://127.0.0.1:3666") as client:
+            response = client.put("/api/settings", json={"values": {}, "secrets": {"openai_api_key": ["private-value"]}})
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn("private-value", response.text)
+        self.assertEqual(response.json()["detail"][0]["loc"], ["body", "secrets", "openai_api_key"])
+
+    def test_local_api_rejects_untrusted_hosts_and_origins_before_side_effects(self):
+        with (
+            patch("backend.app.require_services", return_value=(config(), object(), object(), object())),
+            patch("backend.app.EXECUTOR.submit") as submit,
+            TestClient(app, base_url="http://127.0.0.1:3666") as client,
+        ):
+            for headers in (
+                {"Origin": "https://untrusted.example"},
+                {"Origin": "null"},
+                {"Sec-Fetch-Site": "cross-site"},
+            ):
+                with self.subTest(headers=headers):
+                    self.assertEqual(client.post("/api/jobs", json={"paths": ["Movie.mkv"]}, headers=headers).status_code, 403)
+            rebound = client.post("/api/jobs", json={"paths": ["Movie.mkv"]}, headers={"Host": "untrusted.example", "Origin": "http://untrusted.example"})
+            self.assertEqual(rebound.status_code, 400)
+            self.assertFalse(JOBS)
+            submit.assert_not_called()
+
+            for index, origin in enumerate((None, "http://127.0.0.1:3666", "http://127.0.0.1:3000", "http://localhost:3000")):
+                headers = {"Origin": origin} if origin else {}
+                self.assertEqual(client.post("/api/jobs", json={"paths": [f"Movie{index}.mkv"]}, headers=headers).status_code, 202)
+            preflight = client.options("/api/settings", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "Content-Type"})
+            self.assertEqual(preflight.status_code, 200)
+            self.assertEqual(preflight.headers["access-control-allow-origin"], "http://localhost:3000")
 
     def test_create_job_validates_paths_keeps_order_and_queues_more(self):
         job_config = Config(**(config().__dict__ | {"target_language": "es"}))

@@ -3,14 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import posixpath
 import random
 import re
-import secrets
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -18,26 +15,28 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, ContextManager, Iterable, Iterator, Protocol
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
+import chardet
 import httpx
 import srt
-import chardet
 from dotenv import dotenv_values, unset_key
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
-from backend.frontend import FrontendFiles
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from guessit import guessit
 from openai import OpenAI
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from backend.frontend import FrontendFiles
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Cue"
@@ -89,6 +88,8 @@ VIDEO_EXTENSIONS = {".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".ts", ".we
 SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".vtt"}
 HASH_BLOCK_SIZE = 64 * 1024
 MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
+MAX_DIRECTORY_BYTES = 5 * 1024 * 1024
+DEV_ORIGINS = ["http://127.0.0.1:3000", "http://localhost:3000"]
 TERMINAL_STAGES = {"completed", "failed"}
 DIRECTORY_CACHE_TTL_SECONDS = 5 * 60
 DIRECTORY_CACHE_MAX_ENTRIES = 128
@@ -112,6 +113,39 @@ def apply_unix_permissions(path: Path, mode: int) -> None:
 
 class PipelineError(RuntimeError):
     pass
+
+
+def read_bounded_response(response: httpx.Response, limit: int, message: str) -> bytes:
+    """Enforce limits while streaming, including responses without a length header."""
+    chunks: list[bytes] = []
+    size = 0
+    try:
+        for chunk in response.iter_bytes():
+            size += len(chunk)
+            if size > limit:
+                raise PipelineError(message)
+            chunks.append(chunk)
+    except httpx.HTTPError as exc:
+        raise PipelineError("Response download failed") from exc
+    return b"".join(chunks)
+
+
+def validate_service_url(value: str, label: str) -> None:
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or any(character.isspace() or ord(character) < 32 for character in value)
+        ):
+            raise ValueError
+        parsed.port  # Accessing the port validates malformed/out-of-range values.
+    except ValueError as exc:
+        raise PipelineError(f"{label} must be an HTTP(S) URL without credentials, a query, or a fragment") from exc
 
 
 def validated_local_root(value: str, label: str) -> str:
@@ -219,12 +253,12 @@ class Config:
             raise PipelineError("Missing settings: " + ", ".join(sorted(set(missing))))
 
         endpoint = values.get("webdav_endpoint", "").strip()
-        if source_type == "webdav":
+        if source_type == "webdav" or endpoint:
             if "://" not in endpoint:
                 endpoint = "https://" + endpoint
-            parsed = urlsplit(endpoint)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment:
-                raise PipelineError("WEBDAV_ENDPOINT must be an HTTP(S) host or base URL")
+            validate_service_url(endpoint, "WEBDAV_ENDPOINT")
+        openai_base_url = values["openai_base_url"].strip()
+        validate_service_url(openai_base_url, "OpenAI base URL")
 
         effort = values["openai_reasoning_effort"].strip().lower()
         if effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
@@ -257,7 +291,7 @@ class Config:
             webdav_scan_path=values.get("webdav_scan_path", ""),
             opensubtitles_api_key=secrets["opensubtitles_api_key"],
             opensubtitles_consumer_name=values["opensubtitles_consumer_name"],
-            openai_base_url=values["openai_base_url"].rstrip("/") + "/",
+            openai_base_url=openai_base_url.rstrip("/") + "/",
             openai_api_key=secrets["openai_api_key"],
             openai_model_id=values["openai_model_id"],
             openai_reasoning_effort=effort,
@@ -595,19 +629,25 @@ class WebDAV:
             raise PipelineError("WebDAV redirected outside the configured server")
         if target_path != self.root_path and not target_path.startswith(self.root_path + "/"):
             raise PipelineError("WebDAV path escaped WEBDAV_SCAN_PATH")
+        # A prefix check alone accepts encoded dot segments that servers may
+        # resolve outside the scan root before handling an authenticated request.
+        normalize_relative(target_path[len(self.root_path) :].lstrip("/"))
         return target.geturl()
 
-    def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def _request(self, method: str, url: str, *, stream: bool = False, **kwargs: Any) -> httpx.Response:
         try:
-            response = self.client.request(method, url, **kwargs)
+            request = self.client.build_request(method, url, **kwargs)
+            response = self.client.send(request, stream=stream, follow_redirects=False)
         except httpx.HTTPError as exc:
             raise PipelineError("WebDAV request failed") from exc
         if response.status_code in {301, 302, 307, 308}:
             location = response.headers.get("location")
+            response.close()
             if not location:
                 raise PipelineError("WebDAV returned an invalid redirect")
             try:
-                response = self.client.request(method, self._safe_target(location, url), **kwargs)
+                request = self.client.build_request(method, self._safe_target(location, url), **kwargs)
+                response = self.client.send(request, stream=stream, follow_redirects=False)
             except httpx.HTTPError as exc:
                 raise PipelineError("WebDAV redirect failed") from exc
         return response
@@ -658,12 +698,15 @@ class WebDAV:
             url,
             headers={"Depth": str(depth), "Content-Type": "application/xml"},
             content=body,
+            stream=True,
         )
-        if response.status_code != 207:
-            raise PipelineError(f"WebDAV listing failed ({response.status_code})")
-        if len(response.content) > 5 * 1024 * 1024:
-            raise PipelineError("WebDAV directory response is too large")
-        return self._parse_entries(response.content)
+        try:
+            if response.status_code != 207:
+                raise PipelineError(f"WebDAV listing failed ({response.status_code})")
+            content = read_bounded_response(response, MAX_DIRECTORY_BYTES, "WebDAV directory response is too large")
+            return self._parse_entries(content)
+        finally:
+            response.close()
 
     def list(self, relative: str, refresh: bool = False) -> list[FileEntry]:
         relative = normalize_relative(relative)
@@ -738,7 +781,7 @@ class WebDAV:
         url = self.url_for(relative)
         try:
             request = self.client.build_request("GET", url, headers=headers)
-            response = self.client.send(request, stream=True)
+            response = self.client.send(request, stream=True, follow_redirects=False)
         except httpx.HTTPError as exc:
             raise PipelineError("WebDAV media request failed") from exc
         if response.status_code in {301, 302, 307, 308}:
@@ -750,7 +793,7 @@ class WebDAV:
             try:
                 # The CDN request deliberately uses a client with no WebDAV auth.
                 request = self.media_client.build_request("GET", target.geturl(), headers=headers)
-                response = self.media_client.send(request, stream=True)
+                response = self.media_client.send(request, stream=True, follow_redirects=False)
             except httpx.HTTPError as exc:
                 raise PipelineError("WebDAV media redirect failed") from exc
             if response.status_code in {301, 302, 307, 308}:
@@ -764,7 +807,7 @@ class WebDAV:
             if response.status_code != 206:
                 raise PipelineError("WebDAV server does not support required byte ranges")
             expected = end - start + 1
-            data = b"".join(response.iter_bytes())
+            data = read_bounded_response(response, expected, "WebDAV returned an oversized byte range")
             if len(data) != expected:
                 raise PipelineError("WebDAV returned an incomplete byte range")
             return data
@@ -830,16 +873,7 @@ class WebDAV:
         try:
             if response.status_code != 200:
                 raise PipelineError(f"WebDAV subtitle read failed ({response.status_code})")
-            if int(response.headers.get("content-length", "0") or 0) > limit:
-                raise PipelineError("Existing subtitle is unexpectedly large")
-            chunks: list[bytes] = []
-            size = 0
-            for chunk in response.iter_bytes():
-                size += len(chunk)
-                if size > limit:
-                    raise PipelineError("Existing subtitle is unexpectedly large")
-                chunks.append(chunk)
-            return b"".join(chunks)
+            return read_bounded_response(response, limit, "Existing subtitle is unexpectedly large")
         finally:
             response.close()
 
@@ -956,9 +990,11 @@ class LocalStorage:
     def read_small(self, relative: str, limit: int = MAX_SUBTITLE_BYTES) -> bytes:
         path = self._path(relative, must_exist=True)
         try:
-            if path.stat().st_size > limit:
+            with path.open("rb") as subtitle:
+                data = subtitle.read(limit + 1)
+            if len(data) > limit:
                 raise PipelineError("Existing subtitle is unexpectedly large")
-            return path.read_bytes()
+            return data
         except PipelineError:
             raise
         except OSError as exc:
@@ -983,23 +1019,27 @@ class LocalStorage:
     def move(self, source: str, destination: str) -> None:
         source_path = self._path(source, must_exist=True)
         destination_path = self._path(destination)
-        placeholder_created = False
         try:
-            descriptor = os.open(destination_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            os.close(descriptor)
-            placeholder_created = True
-            os.replace(source_path, destination_path)
+            # Creating the new name must itself be exclusive. A placeholder
+            # followed by replace() can overwrite a file created in between.
+            os.link(source_path, destination_path)
         except FileExistsError as exc:
             raise PipelineError("A file already exists with the suggested name") from exc
         except OSError as exc:
             raise PipelineError("Local rename failed") from exc
-        finally:
-            if placeholder_created and source_path.exists() and destination_path.exists():
-                destination_path.unlink(missing_ok=True)
+        try:
+            source_path.unlink()
+        except OSError as exc:
+            raise PipelineError("Local rename created the new name but could not remove the original") from exc
 
 
 class OpenSubtitles:
-    def __init__(self, config: Config, client: httpx.Client | None = None):
+    def __init__(
+        self,
+        config: Config,
+        client: httpx.Client | None = None,
+        download_client: httpx.Client | None = None,
+    ):
         self.username = config.opensubtitles_username
         self.password = config.opensubtitles_password
         self.client = client or httpx.Client(
@@ -1010,8 +1050,9 @@ class OpenSubtitles:
                 "Accept": "application/json",
             },
             timeout=30,
-            follow_redirects=True,
+            follow_redirects=False,
         )
+        self.download_client = download_client
 
     @staticmethod
     def _retry_delay(response: httpx.Response | None, attempt: int, operation: str) -> float:
@@ -1034,11 +1075,22 @@ class OpenSubtitles:
                 return max(0, delay)
         return 2**attempt + random.uniform(0, 0.25)
 
-    def _request(self, method: str, url: str, operation: str, **kwargs: Any) -> httpx.Response:
+    def _request(
+        self,
+        method: str,
+        url: str,
+        operation: str,
+        *,
+        client: httpx.Client | None = None,
+        stream: bool = False,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        client = client or self.client
         for attempt in range(3):
             response: httpx.Response | None = None
             try:
-                response = self.client.request(method, url, **kwargs)
+                request = client.build_request(method, url, **kwargs)
+                response = client.send(request, stream=stream, follow_redirects=False)
             except httpx.HTTPError as exc:
                 if attempt == 2:
                     raise PipelineError(f"{operation} could not connect") from exc
@@ -1047,9 +1099,11 @@ class OpenSubtitles:
             if attempt == 2:
                 assert response is not None
                 return response
-            delay = self._retry_delay(response, attempt, operation)
-            if response is not None:
-                response.close()
+            try:
+                delay = self._retry_delay(response, attempt, operation)
+            finally:
+                if response is not None:
+                    response.close()
             time.sleep(delay)
         raise AssertionError("unreachable")
 
@@ -1188,16 +1242,45 @@ class OpenSubtitles:
         if not link:
             raise PipelineError("OpenSubtitles did not return a download link")
 
-        subtitle_response = self._request("GET", link, "Temporary subtitle download")
-        if subtitle_response.status_code != 200:
-            raise PipelineError("The temporary subtitle download failed")
-        if len(subtitle_response.content) > MAX_SUBTITLE_BYTES:
-            raise PipelineError("Downloaded subtitle is unexpectedly large")
+        data = self._download_file(link)
         quota = {
             "remaining": payload.get("remaining"),
             "resetTimeUtc": payload.get("reset_time_utc"),
         }
-        return subtitle_response.content, quota
+        return data, quota
+
+    def _download_file(self, link: str) -> bytes:
+        # Temporary links are a separate trust boundary: never attach API keys,
+        # login tokens, or API cookies to these requests or their redirects.
+        context = nullcontext(self.download_client) if self.download_client is not None else httpx.Client(timeout=30)
+        with context as client:
+            for _ in range(6):
+                try:
+                    target = urlsplit(link)
+                    if (
+                        target.scheme != "https"
+                        or not target.hostname
+                        or target.username is not None
+                        or target.password is not None
+                    ):
+                        raise ValueError
+                    target.port
+                except (TypeError, ValueError) as exc:
+                    raise PipelineError("OpenSubtitles returned an unsafe download link") from exc
+                response = self._request("GET", link, "Temporary subtitle download", client=client, stream=True)
+                try:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise PipelineError("OpenSubtitles returned an invalid download redirect")
+                        link = urljoin(link, location)
+                        continue
+                    if response.status_code != 200:
+                        raise PipelineError("The temporary subtitle download failed")
+                    return read_bounded_response(response, MAX_SUBTITLE_BYTES, "Downloaded subtitle is unexpectedly large")
+                finally:
+                    response.close()
+        raise PipelineError("The temporary subtitle download redirected too many times")
 
     def remaining_downloads(self) -> int:
         if self.username and self.password and "Authorization" not in self.client.headers:
@@ -1789,9 +1872,10 @@ def run_job(job_id: str) -> None:
 
 
 app = FastAPI(title="Cue", version="0.1.0")
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"], www_redirect=False)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_origins=DEV_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
@@ -1800,6 +1884,18 @@ app.add_middleware(
 def request_path(request: Request) -> str:
     route = request.scope.get("route")
     return getattr(route, "path", request.url.path)
+
+
+@app.middleware("http")
+async def protect_local_api(request: Request, call_next: Callable[[Request], Any]) -> Response:
+    # CORS controls which responses browsers may read; it does not reject all
+    # cross-origin requests before they can change files or settings.
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in {*DEV_ORIGINS, str(request.base_url).rstrip("/")}:
+        return JSONResponse(status_code=403, content={"detail": "Untrusted request origin"})
+    if origin is None and request.headers.get("sec-fetch-site") == "cross-site":
+        return JSONResponse(status_code=403, content={"detail": "Cross-site requests are not allowed"})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1865,7 +1961,10 @@ async def log_validation_error(request: Request, exc: RequestValidationError) ->
         json.dumps(errors, ensure_ascii=False),
         request.client.host if request.client else "unknown",
     )
-    return await request_validation_exception_handler(request, exc)
+    # Pydantic includes submitted values in validation errors, including whole
+    # settings objects. Keep field diagnostics without reflecting credentials.
+    detail = [{key: error[key] for key in ("loc", "msg", "type")} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 @app.get("/api/settings")

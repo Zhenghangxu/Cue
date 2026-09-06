@@ -23,6 +23,8 @@ npm run prod
 
 Open <http://127.0.0.1:3666/settings/> and choose the media source and subtitle destination, then enter the service settings, target language, and default subtitle mode. Local scan and output paths must be absolute, existing, readable, and writable directories. All values, including credentials, are saved in the permission-restricted `~/Library/Application Support/Cue/config.json`; credentials are never returned to the browser after saving. Legacy credential entries in the project-root `.env` are migrated and removed on the next save without disturbing unrelated entries. A WebDAV endpoint without a scheme is treated as HTTPS. OpenSubtitles search needs the consumer API key; downloads also require the optional username and password so the backend can obtain its 24-hour user token. Saved changes apply immediately.
 
+Cue is intended to run on loopback: requests must use `127.0.0.1` or `localhost`. Browser requests are accepted from the app's own origin and the development frontend on port 3000. Service URLs must keep credentials in their separate settings fields. Local Smart Rename requires a filesystem that supports hard links; if removing the original name fails, both names are retained and the job reports the failure.
+
 ## Development
 
 Run the backend:
@@ -54,6 +56,7 @@ uv run python -m unittest discover -s tests
 RUN_MEDIA_INTEGRATION=1 uv run python -m unittest tests.test_media_integration
 npm --prefix frontend run typecheck
 npm --prefix frontend run lint
+npm --prefix frontend test
 npm --prefix frontend run build
 ```
 
@@ -62,14 +65,3 @@ Automated tests do not call OpenSubtitles, the AI endpoint, or private WebDAV fi
 ## Performance
 
 Translation runs up to four requests concurrently, with at most 32 cues or 6,000 characters per batch. Results are merged by cue ID to preserve order and timestamps, and subtitles are saved only after every batch succeeds. Smaller batches add some prompt-token overhead. Video batches remain sequential. WebDAV movie hashes read the two 64 KiB ranges concurrently; sidecar language tags avoid unnecessary downloads, including target subtitles reused in place.
-
-To measure the full pipeline against a folder containing one video, use the current service settings and a new local output directory:
-
-```sh
-uv run python scripts/benchmark_pipeline.py 'http://127.0.0.1:3666/your-folder/' --output-dir /tmp/cue-after
-uv run python scripts/benchmark_pipeline.py 'http://127.0.0.1:3666/your-folder/' --revision HEAD --output-dir /tmp/cue-before
-```
-
-The benchmark always creates bilingual subtitles, calls the real WebDAV/OpenSubtitles/AI services, and consumes their normal quotas. It saves subtitles, the translation input, and `report.json` locally without changing the configured destination or writing to the media source. Timings include source checks, hashing, search, download, synchronization, translation, and local saving; initial directory browsing and remote upload are excluded. `--revision` loads the selected revision's backend with the same settings for a before/after comparison.
-
-On the supplied Peppa Pig S01E02 video, two runs per version averaged **46.8 seconds before and 34.8 seconds after (26% less time)**. All 58 cues preserved English text, ordering, and timestamps. Average AI usage rose from 2,387 to 2,824 tokens (18%). See [benchmark details](docs/performance.md).
