@@ -38,10 +38,11 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.frontend import FrontendFiles
+from backend.config_storage import config_path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Cue"
-CONFIG_PATH = CONFIG_DIR / "config.json"
+CONFIG_PATH = config_path(Path.home())
+CONFIG_DIR = CONFIG_PATH.parent
 ENV_PATH = BASE_DIR / ".env"
 TARGET_LANGUAGES = {
     "zh-cn": ("Simplified Chinese", "zh-Hans"),
