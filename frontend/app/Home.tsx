@@ -523,10 +523,6 @@ export function Home() {
                     : items.length ? t("home.jobs.allFinished") : t("home.jobs.none")}</b>
                 </div>
                 <div className="queueControls">
-                  <button className="queueIconButton" type="button" aria-label={t("home.jobs.close")} onClick={() => {
-                    setQueueMinimized(true);
-                    jobsDock.current?.querySelector("button")?.focus();
-                  }}><X size={16} aria-hidden="true" /></button>
                   <button
                     className="queueIconButton"
                     type="button"
